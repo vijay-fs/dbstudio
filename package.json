@@ -1,0 +1,30 @@
+{
+  "name": "dbstudio",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Cross-platform database management studio (web + macOS + Windows).",
+  "packageManager": "pnpm@10.28.1",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=10.0.0"
+  },
+  "scripts": {
+    "dev:web": "pnpm --filter @dbstudio/web dev",
+    "dev:desktop": "pnpm --filter @dbstudio/desktop tauri dev",
+    "build:web": "pnpm --filter @dbstudio/web build",
+    "build:desktop": "pnpm --filter @dbstudio/desktop tauri build",
+    "server:dev": "cargo run -p dbstudio-server",
+    "server:build": "cargo build -p dbstudio-server --release",
+    "rust:check": "cargo check --workspace",
+    "rust:test": "cargo test --workspace",
+    "rust:fmt": "cargo fmt --all",
+    "rust:clippy": "cargo clippy --workspace --all-targets -- -D warnings",
+    "lint": "pnpm -r --parallel lint",
+    "typecheck": "pnpm -r --parallel typecheck",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.2"
+  }
+}

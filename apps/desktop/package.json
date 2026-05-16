@@ -1,0 +1,17 @@
+{
+  "name": "@dbstudio/desktop",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.2.4"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.2.0"
+  }
+}

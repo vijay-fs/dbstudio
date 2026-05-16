@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "preserve",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": false,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "incremental": true,
+    "verbatimModuleSyntax": false,
+    "paths": {
+      "@dbstudio/ui": ["./packages/ui/src"],
+      "@dbstudio/ui/*": ["./packages/ui/src/*"],
+      "@dbstudio/editor": ["./packages/editor/src"],
+      "@dbstudio/editor/*": ["./packages/editor/src/*"],
+      "@dbstudio/erd": ["./packages/erd/src"],
+      "@dbstudio/erd/*": ["./packages/erd/src/*"],
+      "@dbstudio/api-client": ["./packages/api-client/src"],
+      "@dbstudio/api-client/*": ["./packages/api-client/src/*"]
+    }
+  }
+}
