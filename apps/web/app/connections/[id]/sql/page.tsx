@@ -99,6 +99,7 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
   const setActive = useSqlTabs((s) => s.setActive);
   const setSql = useSqlTabs((s) => s.setSql);
   const loadIntoNewTab = useSqlTabs((s) => s.loadIntoNewTab);
+  const markRan = useSqlTabs((s) => s.markRan);
 
   // Run state lives in-memory keyed by tab id so each tab keeps its own
   // result + error panel. Switching tabs swaps the visible panel; reloading
@@ -296,6 +297,9 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
       });
       const elapsedMs = Math.round(performance.now() - startedAt);
       setRunByTab((m) => ({ ...m, [tabId]: { kind: 'ok', result, sql: sqlToRun } }));
+      // Snapshot the executed SQL on the tab so the TabBar can compare
+      // against the live buffer and show the dirty dot when it diverges.
+      markRan(profile.id, tabId, sqlToRun);
       recordHistory({
         connectionId: profile.id,
         sql: sqlToRun,
@@ -629,7 +633,7 @@ function TabBar({
   onClose,
   onNew,
 }: {
-  tabs: { id: string; title: string }[];
+  tabs: { id: string; title: string; sql: string; lastRunSql?: string }[];
   activeId: string | null;
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
@@ -640,6 +644,14 @@ function TabBar({
       <div className="scrollbar-thin flex flex-1 overflow-x-auto">
         {tabs.map((tab, i) => {
           const active = tab.id === activeId;
+          // A tab is dirty when the buffer has non-empty text and either
+          // hasn't been run yet (`lastRunSql` undefined) or has been
+          // edited since the last successful run. We trim before
+          // comparing so whitespace-only edits don't trip it.
+          const trimmedSql = tab.sql.trim();
+          const dirty =
+            trimmedSql.length > 0 &&
+            (tab.lastRunSql == null || tab.lastRunSql.trim() !== trimmedSql);
           return (
             <div
               key={tab.id}
@@ -657,8 +669,17 @@ function TabBar({
                   onClose(tab.id);
                 }
               }}
-              title={`${tab.title}\nCmd+${i + 1} to switch`}
+              title={
+                `${tab.title}\nCmd+${i + 1} to switch` +
+                (dirty ? '\nUnrun changes in this tab' : '')
+              }
             >
+              {dirty && (
+                <span
+                  className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500"
+                  aria-label="Tab has unrun changes"
+                />
+              )}
               <span className="max-w-[180px] truncate">{tab.title || 'Untitled'}</span>
               <button
                 type="button"

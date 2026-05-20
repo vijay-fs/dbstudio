@@ -17,6 +17,10 @@ import {
   MoreHorizontal,
   History,
   Bookmark,
+  Sun,
+  Moon,
+  Pin,
+  PinOff,
 } from 'lucide-react';
 
 import { useConnections } from '@/store/connections';
@@ -24,6 +28,7 @@ import { useSchemaCache } from '@/store/schemaCache';
 import { ENGINE_LABELS, type ConnectionProfile } from '@/lib/types';
 import { openTableInSql } from '@/lib/openTable';
 import { cn } from '@/lib/utils';
+import { readTheme, setTheme, type Theme } from '@/lib/theme';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -41,12 +46,47 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { CommandPalette } from '@/components/CommandPalette';
+import { KeyboardShortcutsDialog } from '@/components/KeyboardShortcutsDialog';
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const profiles = useConnections((s) => s.profiles);
+  const meta = useConnections((s) => s.meta);
   const remove = useConnections((s) => s.remove);
+  const markUsed = useConnections((s) => s.markUsed);
+  const togglePinned = useConnections((s) => s.togglePinned);
   const pathname = usePathname();
   const router = useRouter();
+
+  // Bump lastUsedAt whenever the route lands on a connection page. One
+  // effect here covers every sub-page (sql/schema/history/snippets/edit)
+  // so each individual page doesn't have to remember to do it.
+  useEffect(() => {
+    const m = pathname?.match(/^\/connections\/([^/]+)(\/|$)/);
+    const cid = m?.[1];
+    if (cid && profiles.some((p) => p.id === cid)) {
+      markUsed(cid);
+    }
+  }, [pathname, profiles, markUsed]);
+
+  // Sort: pinned connections first (most-recently-used among pinned at
+  // the top), then unpinned by lastUsedAt, then anything else
+  // alphabetically. Stable across renders because we sort a fresh copy
+  // each time profile/meta change.
+  const sortedProfiles = useMemo(() => {
+    const copy = [...profiles];
+    copy.sort((a, b) => {
+      const ma = meta[a.id];
+      const mb = meta[b.id];
+      if (Boolean(ma?.pinned) !== Boolean(mb?.pinned)) {
+        return ma?.pinned ? -1 : 1;
+      }
+      const la = ma?.lastUsedAt ?? 0;
+      const lb = mb?.lastUsedAt ?? 0;
+      if (la !== lb) return lb - la;
+      return a.name.localeCompare(b.name);
+    });
+    return copy;
+  }, [profiles, meta]);
 
   const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string } | null>(
     null,
@@ -100,7 +140,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </p>
           ) : (
             <ul className="space-y-0.5">
-              {profiles.map((p) => {
+              {sortedProfiles.map((p) => {
                 // Default connection click lands in the SQL workspace — the
                 // primary daily-driver surface. Schema, History and Snippets
                 // are accessible from the per-row kebab menu, which keeps
@@ -123,6 +163,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                       >
                         <Database className="h-3.5 w-3.5 shrink-0" />
                         <span className="flex-1 truncate">{p.name}</span>
+                        {meta[p.id]?.pinned && (
+                          <Pin
+                            className="h-2.5 w-2.5 shrink-0 text-muted-foreground"
+                            aria-label="Pinned"
+                          />
+                        )}
                         <span className="text-[9px] uppercase tracking-wider text-muted-foreground">
                           {ENGINE_LABELS[p.engine]}
                         </span>
@@ -131,6 +177,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                         profileId={p.id}
                         onDelete={() => askDelete(p.id, p.name)}
                         active={Boolean(active)}
+                        pinned={Boolean(meta[p.id]?.pinned)}
+                        onTogglePin={() => togglePinned(p.id)}
                       />
                     </div>
                     {active && (
@@ -145,8 +193,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           )}
         </nav>
 
-        <div className="border-t px-5 py-2.5 text-[10px] text-muted-foreground">
-          Phase 1 · local-only · unsigned build
+        <div className="flex items-center justify-between gap-2 border-t px-5 py-2.5 text-[10px] text-muted-foreground">
+          <span>Phase 1 · local-only · unsigned build</span>
+          <ThemeToggle />
         </div>
       </aside>
 
@@ -180,6 +229,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </Dialog>
 
       <CommandPalette />
+      <KeyboardShortcutsDialog />
     </div>
   );
 }
@@ -189,14 +239,45 @@ export function AppShell({ children }: { children: React.ReactNode }) {
  *  click-to-open-SQL flow. Each item navigates via <Link>-equivalent
  *  prefetched anchor; Delete is destructive and goes through the parent's
  *  confirm dialog. */
+/** Footer-level theme switch. Reads the current theme on mount (after
+ *  the no-flash script has already set `.dark` if appropriate) and
+ *  drives `setTheme` to flip the class + persist on click. Stays as a
+ *  small icon-only button so it doesn't crowd the build-info line. */
+function ThemeToggle() {
+  const [theme, setLocalTheme] = useState<Theme>('light');
+  useEffect(() => {
+    setLocalTheme(readTheme());
+  }, []);
+  const flip = () => {
+    const next: Theme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(next);
+    setLocalTheme(next);
+  };
+  return (
+    <button
+      type="button"
+      onClick={flip}
+      aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+      title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+      className="rounded p-1 hover:bg-accent hover:text-foreground"
+    >
+      {theme === 'dark' ? <Sun className="h-3 w-3" /> : <Moon className="h-3 w-3" />}
+    </button>
+  );
+}
+
 function ConnectionMenu({
   profileId,
   onDelete,
   active,
+  pinned,
+  onTogglePin,
 }: {
   profileId: string;
   onDelete: () => void;
   active: boolean;
+  pinned: boolean;
+  onTogglePin: () => void;
 }) {
   return (
     <DropdownMenu>
@@ -220,6 +301,11 @@ function ConnectionMenu({
           it into the main content area and cover the SQL workspace's tab
           bar — exactly what we want to avoid. */}
       <DropdownMenuContent align="end" side="bottom" sideOffset={4}>
+        <DropdownMenuItem onSelect={onTogglePin}>
+          {pinned ? <PinOff className="h-3 w-3" /> : <Pin className="h-3 w-3" />}
+          {pinned ? 'Unpin' : 'Pin to top'}
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
         <DropdownMenuItem asChild>
           <Link href={`/connections/${profileId}/schema` as Route}>
             <Workflow className="h-3 w-3" />

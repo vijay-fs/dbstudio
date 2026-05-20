@@ -11,6 +11,10 @@ export interface SqlTab {
   sql: string;
   /** ms epoch — used only as a stable creation-order tiebreaker. */
   createdAt: number;
+  /** Snapshot of `sql` at the moment of the last successful run. Drives
+   *  the dirty-tab indicator: if the live buffer differs from this we
+   *  know the user has typed changes that haven't been executed yet. */
+  lastRunSql?: string;
 }
 
 interface PerConnection {
@@ -26,6 +30,9 @@ interface SqlTabsState {
   newTab: (connectionId: string, sql?: string) => SqlTab;
   closeTab: (connectionId: string, tabId: string) => void;
   setSql: (connectionId: string, tabId: string, sql: string) => void;
+  /** Stamp `lastRunSql` on a tab after a successful Run. The next typed
+   *  edit will then flip the dirty indicator on. */
+  markRan: (connectionId: string, tabId: string, sql: string) => void;
   /** Overwrite + activate the named tab. Used by the command palette's
    *  "load recent query" flow so it lands in a dedicated tab instead of
    *  trampling whatever the user had open. */
@@ -138,6 +145,23 @@ export const useSqlTabs = create<SqlTabsState>()(
                 ...slot,
                 tabs: slot.tabs.map((t) =>
                   t.id === tabId ? { ...t, sql, title: deriveTitle(sql) } : t,
+                ),
+              },
+            },
+          };
+        }),
+
+      markRan: (connectionId, tabId, sql) =>
+        set((s) => {
+          const slot = s.byConnection[connectionId];
+          if (!slot) return s;
+          return {
+            byConnection: {
+              ...s.byConnection,
+              [connectionId]: {
+                ...slot,
+                tabs: slot.tabs.map((t) =>
+                  t.id === tabId ? { ...t, lastRunSql: sql } : t,
                 ),
               },
             },

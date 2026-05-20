@@ -40,7 +40,28 @@ import { openTableInSql } from '@/lib/openTable';
 export function CommandPalette() {
   const router = useRouter();
   const pathname = usePathname();
-  const profiles = useConnections((s) => s.profiles);
+  const rawProfiles = useConnections((s) => s.profiles);
+  const connectionMeta = useConnections((s) => s.meta);
+
+  // Order: pinned first, then by most-recently-used. Names are a
+  // tiebreaker so two never-used connections still have a stable order.
+  // The palette's filter does its own fuzzy match on top of this so the
+  // sort only matters when the user hasn't typed yet.
+  const profiles = useMemo(() => {
+    const copy = [...rawProfiles];
+    copy.sort((a, b) => {
+      const ma = connectionMeta[a.id];
+      const mb = connectionMeta[b.id];
+      if (Boolean(ma?.pinned) !== Boolean(mb?.pinned)) {
+        return ma?.pinned ? -1 : 1;
+      }
+      const la = ma?.lastUsedAt ?? 0;
+      const lb = mb?.lastUsedAt ?? 0;
+      if (la !== lb) return lb - la;
+      return a.name.localeCompare(b.name);
+    });
+    return copy;
+  }, [rawProfiles, connectionMeta]);
   const allHistory = useQueryHistory((s) => s.entries);
   const cachedSchemas = useSchemaCache((s) => s.entries);
   const allSnippets = useSnippets((s) => s.entries);
