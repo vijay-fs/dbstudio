@@ -76,7 +76,7 @@ export function TableDetailsDrawer({
                 </DialogPrimitive.Close>
               </header>
 
-              <div className="flex-1 overflow-y-auto px-4 py-3">
+              <div className="scrollbar-hidden flex-1 overflow-y-auto px-4 py-3">
                 <Columns table={table} />
                 <PrimaryKeyBlock table={table} />
                 <ForeignKeysBlock fks={table.foreign_keys} />

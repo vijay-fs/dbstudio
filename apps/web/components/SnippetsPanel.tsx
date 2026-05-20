@@ -73,7 +73,7 @@ export function SnippetsPanel({ connectionId, onLoad, onRerun }: Props) {
       {entries.length === 0 ? (
         <p className="p-4 text-xs text-muted-foreground">No matches.</p>
       ) : (
-        <ul className="flex-1 divide-y overflow-y-auto">
+        <ul className="scrollbar-hidden flex-1 divide-y overflow-y-auto">
           {entries.map((snippet) => (
             <SnippetRow
               key={snippet.id}

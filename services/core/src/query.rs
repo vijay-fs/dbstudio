@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 pub type Value = serde_json::Value;
 
@@ -9,6 +10,12 @@ pub struct QueryRequest {
     pub params: Vec<Value>,
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Optional caller-supplied token that uniquely identifies this run.
+    /// Drivers that support cancellation register the underlying backend
+    /// PID / connection id against this token so a sibling `cancel_query`
+    /// call can target it. Omit to opt out of cancellation support.
+    #[serde(default)]
+    pub query_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

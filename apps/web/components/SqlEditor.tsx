@@ -13,6 +13,7 @@ import type { editor } from 'monaco-editor';
 import type { Schema } from '@dbstudio/erd';
 import type { DatabaseEngine } from '@/lib/types';
 import { registerSqlCompletion } from '@/lib/sqlCompletion';
+import { formatSql } from '@/lib/formatSql';
 
 // Monaco is large (~3 MB) and cannot SSR. Load it client-side only.
 const MonacoEditor = dynamic(() => import('@monaco-editor/react').then((m) => m.default), {
@@ -44,6 +45,10 @@ export interface SqlEditorProps {
 export interface SqlEditorHandle {
   /** Run the current selection, or the full buffer if nothing is selected. */
   run: () => void;
+  /** Pretty-print the current selection, or the full buffer if nothing is
+   *  selected. Engine-aware (PG / MySQL / MariaDB / SQLite dialects). The
+   *  edit goes through Monaco so undo (`Cmd+Z`) reverses it cleanly. */
+  format: () => void;
 }
 
 export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(function SqlEditor(
@@ -72,6 +77,14 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(function Sq
   useEffect(() => {
     onRunRef.current = onRun;
   }, [onRun]);
+
+  // `engine` is captured by `formatActive`. Stash it in a ref so the Monaco
+  // command handler (registered exactly once in onMount) always sees the
+  // current engine when the connection swaps without us having to rebind.
+  const engineRef = useRef(engine);
+  useEffect(() => {
+    engineRef.current = engine;
+  }, [engine]);
 
   // Push schema/engine/defaultSchema updates into the live provider.
   useEffect(() => {
@@ -105,7 +118,39 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(function Sq
     onRunRef.current?.(sql);
   }, []);
 
-  useImperativeHandle(ref, () => ({ run: runActive }), [runActive]);
+  /** Format the current selection (if any) or the whole buffer. Goes
+   *  through `executeEdits` so it lands in the undo stack and the cursor
+   *  stays anchored at the edit site. */
+  const formatActive = useCallback(() => {
+    const ed = editorRef.current;
+    if (!ed) return;
+    const model = ed.getModel();
+    if (!model) return;
+    const eng = engineRef.current;
+    const selection = ed.getSelection();
+    if (selection && !selection.isEmpty()) {
+      const original = model.getValueInRange(selection);
+      const formatted = formatSql(original, eng);
+      if (formatted === original) return;
+      ed.executeEdits('dbstudio.format', [
+        { range: selection, text: formatted, forceMoveMarkers: true },
+      ]);
+    } else {
+      const original = model.getValue();
+      const formatted = formatSql(original, eng);
+      if (formatted === original) return;
+      ed.executeEdits('dbstudio.format', [
+        { range: model.getFullModelRange(), text: formatted, forceMoveMarkers: true },
+      ]);
+    }
+    ed.focus();
+  }, []);
+
+  useImperativeHandle(
+    ref,
+    () => ({ run: runActive, format: formatActive }),
+    [runActive, formatActive],
+  );
 
   return (
     <MonacoEditor
@@ -138,6 +183,16 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(function Sq
           contextMenuGroupId: 'navigation',
           contextMenuOrder: 1,
           run: () => runActive(),
+        });
+        ed.addAction({
+          id: 'dbstudio.format-sql',
+          label: 'Format SQL',
+          keybindings: [
+            monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyF,
+          ],
+          contextMenuGroupId: 'navigation',
+          contextMenuOrder: 2,
+          run: () => formatActive(),
         });
         // Defensive: if a previous registration leaked (shouldn't happen
         // with the unmount cleanup above, but HMR is finicky), drop it

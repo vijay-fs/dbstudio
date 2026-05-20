@@ -44,6 +44,12 @@ pub struct Column {
     pub position: u32,
     #[serde(default)]
     pub comment: Option<String>,
+    /// When the column has a finite set of allowed string values (PG user-
+    /// defined enum, MySQL `enum(...)`), the engine driver resolves and
+    /// attaches the option list here so the UI can render a dropdown
+    /// rather than a free-text input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enum_options: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

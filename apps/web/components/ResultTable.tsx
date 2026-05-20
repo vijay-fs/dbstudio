@@ -115,6 +115,68 @@ type ApplyState =
   | { kind: 'applying' }
   | { kind: 'errors'; failures: Array<{ edit: PendingEdit; message: string }> };
 
+/** What kind of input we should render for a given column's data_type.
+ *  Drives both the visual control (number input, date picker, enum select)
+ *  and the value coercion at insert time. Detection is dialect-aware:
+ *  MySQL/MariaDB enums show up as `enum('a','b','c')` literals so we can
+ *  parse the options; Postgres enums show up as the enum type name only
+ *  (introspection doesn't fetch the option list yet), so they fall back
+ *  to a plain text input. */
+type InsertFieldKind =
+  | { kind: 'enum'; options: string[] }
+  | { kind: 'bool' }
+  | { kind: 'int' }
+  | { kind: 'number' }
+  | { kind: 'date' }
+  | { kind: 'time' }
+  | { kind: 'datetime' }
+  | { kind: 'json' }
+  | { kind: 'uuid' }
+  | { kind: 'text'; maxLength?: number };
+
+/** Extract the literal options from a MySQL/MariaDB `enum('a','b','c')` or
+ *  `set('a','b')` declaration. Tolerates the SQL escape `''` for an
+ *  embedded single quote inside a literal. */
+function parseEnumOptions(rawType: string): string[] {
+  const opts: string[] = [];
+  const re = /'((?:[^']|'')*)'/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(rawType)) !== null) {
+    opts.push((m[1] ?? '').replace(/''/g, "'"));
+  }
+  return opts;
+}
+
+function detectFieldKind(
+  dataType: string,
+  enumOptions?: string[] | null,
+): InsertFieldKind {
+  const raw = dataType;
+  const t = dataType.toLowerCase().trim();
+  // Server-side enum metadata (Postgres user-defined enums) takes priority
+  // over textual parsing — for `mood`-typed columns the data_type is just
+  // the type name with no inline options to extract.
+  if (enumOptions && enumOptions.length > 0) {
+    return { kind: 'enum', options: enumOptions };
+  }
+  if (/^enum\s*\(/i.test(raw)) {
+    return { kind: 'enum', options: parseEnumOptions(raw) };
+  }
+  if (/(^|\s)bool/.test(t)) return { kind: 'bool' };
+  // Order matters: timestamp/datetime before date/time so a "timestamp"
+  // column doesn't fall through to a date-only picker.
+  if (/(timestamp|datetime)/.test(t)) return { kind: 'datetime' };
+  if (/^date\b/.test(t)) return { kind: 'date' };
+  if (/^time\b/.test(t)) return { kind: 'time' };
+  if (/(^|\W)(int|serial|bigserial|smallserial)/.test(t)) return { kind: 'int' };
+  if (/(numeric|decimal|real|double|float|money)/.test(t)) return { kind: 'number' };
+  if (/(json|jsonb)/.test(t)) return { kind: 'json' };
+  if (/uuid/.test(t)) return { kind: 'uuid' };
+  const varMatch = t.match(/^(?:character varying|varchar|char)\s*\(\s*(\d+)\s*\)/);
+  if (varMatch) return { kind: 'text', maxLength: Number(varMatch[1]) };
+  return { kind: 'text' };
+}
+
 interface InsertDraft {
   name: string;
   data_type: string;
@@ -122,6 +184,7 @@ interface InsertDraft {
   hasDefault: boolean;
   include: boolean;
   value: string;
+  kind: InsertFieldKind;
 }
 
 function buildInsertDraft(columns: SchemaColumn[]): InsertDraft[] {
@@ -132,6 +195,7 @@ function buildInsertDraft(columns: SchemaColumn[]): InsertDraft[] {
     hasDefault: c.default != null,
     include: !c.nullable && c.default == null,
     value: '',
+    kind: detectFieldKind(c.data_type, c.enum_options),
   }));
 }
 
@@ -801,32 +865,15 @@ export function ResultTable({
                           </div>
                         </td>
                         <td className="w-[55%] px-2 py-1.5">
-                          <input
-                            type="text"
-                            value={d.value}
-                            disabled={!d.include}
-                            onChange={(e) =>
+                          <InsertFieldInput
+                            draft={d}
+                            onChange={(next) =>
                               setInsertDraft((prev) =>
                                 prev.map((p, j) =>
-                                  j === i ? { ...p, value: e.target.value } : p,
+                                  j === i ? { ...p, value: next } : p,
                                 ),
                               )
                             }
-                            placeholder={
-                              !d.include
-                                ? d.hasDefault
-                                  ? '(default)'
-                                  : d.nullable
-                                    ? '(NULL)'
-                                    : ''
-                                : d.nullable
-                                  ? 'value or empty for NULL'
-                                  : 'value'
-                            }
-                            className="w-full rounded border border-input bg-background px-2 py-1 font-mono text-xs disabled:bg-muted/40 disabled:text-muted-foreground"
-                            autoCapitalize="none"
-                            autoCorrect="off"
-                            spellCheck={false}
                           />
                         </td>
                       </tr>
@@ -994,6 +1041,139 @@ function Labeled({ label, children }: { label: string; children: React.ReactNode
   );
 }
 
+
+/** Type-aware value input for the Insert row dialog. Picks an HTML input
+ *  type / control based on the column's parsed `kind`:
+ *
+ *   - enum   → <select> with the parsed literal options
+ *   - bool   → <select> with true / false (plus an empty option for NULL)
+ *   - int    → <input type="number" step="1">
+ *   - number → <input type="number">
+ *   - date / time / datetime → corresponding HTML5 date pickers
+ *   - text   → <input type="text"> with maxLength when known
+ *
+ *  Disabled when the column is excluded (default / NULL will be used).
+ *  Validation: HTML5 attributes catch the most common typos; the database
+ *  itself remains the authority on whether the value is acceptable. */
+function InsertFieldInput({
+  draft,
+  onChange,
+}: {
+  draft: InsertDraft;
+  onChange: (next: string) => void;
+}) {
+  const baseClass =
+    'w-full rounded border border-input bg-background px-2 py-1 font-mono text-xs disabled:bg-muted/40 disabled:text-muted-foreground';
+
+  const disabled = !draft.include;
+  const placeholder = !draft.include
+    ? draft.hasDefault
+      ? '(default)'
+      : draft.nullable
+        ? '(NULL)'
+        : ''
+    : draft.nullable
+      ? 'value or empty for NULL'
+      : 'value';
+
+  if (draft.kind.kind === 'enum') {
+    const opts = draft.kind.options;
+    return (
+      <select
+        value={draft.value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        className={baseClass}
+        title={
+          opts.length === 0
+            ? 'No options parsed from the type — falling back to free text'
+            : `Enum: ${opts.join(', ')}`
+        }
+      >
+        <option value="">
+          {draft.nullable || draft.hasDefault ? '(default / NULL)' : '— pick —'}
+        </option>
+        {opts.map((o) => (
+          <option key={o} value={o}>
+            {o}
+          </option>
+        ))}
+      </select>
+    );
+  }
+
+  if (draft.kind.kind === 'bool') {
+    return (
+      <select
+        value={draft.value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        className={baseClass}
+      >
+        <option value="">
+          {draft.nullable || draft.hasDefault ? '(default / NULL)' : '— pick —'}
+        </option>
+        <option value="true">true</option>
+        <option value="false">false</option>
+      </select>
+    );
+  }
+
+  if (draft.kind.kind === 'int' || draft.kind.kind === 'number') {
+    return (
+      <input
+        type="number"
+        step={draft.kind.kind === 'int' ? '1' : 'any'}
+        value={draft.value}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className={baseClass}
+        autoCapitalize="none"
+        autoCorrect="off"
+        spellCheck={false}
+      />
+    );
+  }
+
+  if (
+    draft.kind.kind === 'date' ||
+    draft.kind.kind === 'time' ||
+    draft.kind.kind === 'datetime'
+  ) {
+    const htmlType =
+      draft.kind.kind === 'date'
+        ? 'date'
+        : draft.kind.kind === 'time'
+          ? 'time'
+          : 'datetime-local';
+    return (
+      <input
+        type={htmlType}
+        value={draft.value}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        className={baseClass}
+      />
+    );
+  }
+
+  return (
+    <input
+      type="text"
+      value={draft.value}
+      disabled={disabled}
+      maxLength={draft.kind.kind === 'text' ? draft.kind.maxLength : undefined}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      className={baseClass}
+      autoCapitalize="none"
+      autoCorrect="off"
+      spellCheck={false}
+    />
+  );
+}
+
 // ---- Value helpers ------------------------------------------------------
 
 function renderCell(value: unknown): string {
@@ -1114,23 +1294,28 @@ function coerceCellValue(newValue: unknown, dataType: string, nullable: boolean)
 }
 
 function coerceInsertValue(d: InsertDraft): unknown {
-  const t = d.data_type.toLowerCase();
   if (d.value === '') {
     return d.nullable ? null : '';
   }
-  if (/(int|serial|bigint|smallint|mediumint|tinyint)/.test(t)) {
-    const n = Number(d.value);
-    return Number.isFinite(n) ? Math.trunc(n) : d.value;
+  switch (d.kind.kind) {
+    case 'int': {
+      const n = Number(d.value);
+      return Number.isFinite(n) ? Math.trunc(n) : d.value;
+    }
+    case 'number': {
+      const n = Number(d.value);
+      return Number.isFinite(n) ? n : d.value;
+    }
+    case 'bool': {
+      const v = d.value.toLowerCase();
+      if (v === 'true' || v === '1') return true;
+      if (v === 'false' || v === '0') return false;
+      return d.value;
+    }
+    // enum / date / time / datetime / json / uuid / text → string passthrough.
+    default:
+      return d.value;
   }
-  if (/(numeric|decimal|real|double|float|money)/.test(t)) {
-    const n = Number(d.value);
-    return Number.isFinite(n) ? n : d.value;
-  }
-  if (/(bool)/.test(t)) {
-    if (d.value.toLowerCase() === 'true' || d.value === '1') return true;
-    if (d.value.toLowerCase() === 'false' || d.value === '0') return false;
-  }
-  return d.value;
 }
 
 // ---- SQL preview strings ------------------------------------------------

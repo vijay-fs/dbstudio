@@ -52,6 +52,10 @@ export interface QueryRequest {
   sql: string;
   params?: unknown[];
   limit?: number | null;
+  /** Optional UUID the frontend mints per Run. Drivers register the
+   *  underlying backend PID / connection id against this token so a
+   *  sibling `cancelQuery` call can target it. */
+  query_id?: string;
 }
 
 export interface ResultColumn {

@@ -30,6 +30,12 @@ const DEFAULT_ROW_LIMIT: u32 = 10_000;
 pub struct PostgresDriver {
     pools: Arc<DashMap<Uuid, PgPool>>,
     tunnels: Arc<DashMap<Uuid, Arc<Tunnel>>>,
+    /// Map from caller-supplied `query_id` → backend PID of the connection
+    /// running it. Populated when `execute` pins a connection at the start
+    /// of a statement, drained when the statement finishes. A sibling
+    /// `cancel_query` looks up the PID and issues `pg_cancel_backend()` on
+    /// a side connection from the same pool.
+    query_pids: Arc<DashMap<Uuid, i32>>,
 }
 
 impl PostgresDriver {
@@ -37,6 +43,7 @@ impl PostgresDriver {
         Self {
             pools: Arc::new(DashMap::new()),
             tunnels: Arc::new(DashMap::new()),
+            query_pids: Arc::new(DashMap::new()),
         }
     }
 
@@ -136,10 +143,40 @@ impl Default for PostgresDriver {
     }
 }
 
-async fn run_single(pool: &PgPool, sql: &str, limit: usize) -> Result<QueryResult> {
+async fn run_single(
+    pool: &PgPool,
+    sql: &str,
+    limit: usize,
+    query_id: Option<Uuid>,
+    query_pids: &Arc<DashMap<Uuid, i32>>,
+) -> Result<QueryResult> {
+    // Pin a connection from the pool for the lifetime of this statement so
+    // (a) the backend PID we look up corresponds to the connection that
+    // will actually run the query, and (b) `pg_cancel_backend` from a
+    // sibling task hits the right backend. Without pinning, sqlx may
+    // acquire+release a different connection per call.
+    let mut conn = pool.acquire().await.map_err(map_sqlx_error)?;
+
+    // Register the backend PID against the caller's query_id so a
+    // sibling cancel_query can find it. The drop guard below removes the
+    // entry on every exit path — success, error, or panic — so we don't
+    // leak entries that could later cancel an unrelated connection that
+    // happens to reuse the same PID after the pool reclaims it.
+    if let Some(qid) = query_id {
+        let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(map_sqlx_error)?;
+        query_pids.insert(qid, pid);
+    }
+    let _guard = QueryIdGuard {
+        registry: query_pids,
+        qid: query_id,
+    };
+
     if !is_query_statement(sql) {
         let result = sqlx::query(sql)
-            .execute(pool)
+            .execute(&mut *conn)
             .await
             .map_err(map_sqlx_error)?;
         return Ok(QueryResult {
@@ -152,7 +189,7 @@ async fn run_single(pool: &PgPool, sql: &str, limit: usize) -> Result<QueryResul
     }
 
     let pg_rows = sqlx::query(sql)
-        .fetch_all(pool)
+        .fetch_all(&mut *conn)
         .await
         .map_err(map_sqlx_error)?;
 
@@ -186,6 +223,23 @@ async fn run_single(pool: &PgPool, sql: &str, limit: usize) -> Result<QueryResul
         elapsed_ms: 0,
         truncated,
     })
+}
+
+/// Removes the (query_id, pid) registration when the statement exits,
+/// regardless of how — success, error, or future being dropped. Keeping
+/// the registry tight prevents a stale PID from accidentally cancelling
+/// an unrelated query that later runs on a recycled connection.
+struct QueryIdGuard<'a> {
+    registry: &'a Arc<DashMap<Uuid, i32>>,
+    qid: Option<Uuid>,
+}
+
+impl Drop for QueryIdGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(qid) = self.qid {
+            self.registry.remove(&qid);
+        }
+    }
 }
 
 async fn build_connection_url(
@@ -383,12 +437,32 @@ impl Driver for PostgresDriver {
 
         let mut last: Option<QueryResult> = None;
         for stmt in &statements {
-            last = Some(run_single(&pool, stmt, limit).await?);
+            last = Some(run_single(&pool, stmt, limit, req.query_id, &self.query_pids).await?);
         }
 
         let mut out = last.expect("at least one statement");
         out.elapsed_ms = started.elapsed().as_millis() as u64;
         Ok(out)
+    }
+
+    async fn cancel_query(&self, profile: &ConnectionProfile, query_id: Uuid) -> Result<()> {
+        // Look up the backend PID we registered when the query started.
+        // Unknown id is a no-op — the most common case is the query
+        // already finished before the cancel arrived.
+        let pid = match self.query_pids.get(&query_id) {
+            Some(entry) => *entry.value(),
+            None => return Ok(()),
+        };
+        // Open a side connection from the same pool to send the cancel
+        // signal. The pool's max_connections (5) is enough — even when
+        // the user's query has one slot pinned, four remain free.
+        let pool = self.pool_for(profile).await?;
+        sqlx::query("SELECT pg_cancel_backend($1)")
+            .bind(pid)
+            .execute(&pool)
+            .await
+            .map_err(map_sqlx_error)?;
+        Ok(())
     }
 
     async fn schema(&self, profile: &ConnectionProfile) -> Result<Schema> {

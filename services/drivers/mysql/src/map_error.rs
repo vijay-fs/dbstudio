@@ -23,6 +23,12 @@ pub fn map_sqlx_error(err: SqlxError) -> DbError {
                 "1146" | "1054" | "1049" => DbError::NotFound(msg),
                 // SQL syntax errors
                 "1064" | "1149" => DbError::Syntax(msg),
+                // `KILL QUERY <id>` aborts the running statement with
+                // errno 1317 ("Query execution was interrupted"). Map it
+                // to the engine-agnostic `Cancelled` so the UI uses the
+                // muted "Query cancelled" panel rather than the red
+                // "Query failed" one.
+                "1317" => DbError::Cancelled,
                 // Unknown / fallthrough
                 _ => DbError::Internal(if code.is_empty() {
                     msg

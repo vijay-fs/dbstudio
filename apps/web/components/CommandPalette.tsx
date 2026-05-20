@@ -140,7 +140,7 @@ export function CommandPalette() {
           placeholder="Jump to a connection, recent query, or action…"
           className="w-full border-b bg-transparent px-4 py-3 text-sm outline-none placeholder:text-muted-foreground"
         />
-        <Command.List className="max-h-[400px] overflow-y-auto p-1">
+        <Command.List className="scrollbar-hidden max-h-[400px] overflow-y-auto p-1">
           <Command.Empty className="px-3 py-6 text-center text-xs text-muted-foreground">
             No matches.
           </Command.Empty>

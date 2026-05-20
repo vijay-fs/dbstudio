@@ -30,6 +30,11 @@ const DEFAULT_ROW_LIMIT: u32 = 10_000;
 pub struct MySqlDriver {
     pools: Arc<DashMap<Uuid, MySqlPool>>,
     tunnels: Arc<DashMap<Uuid, Arc<Tunnel>>>,
+    /// Map from caller-supplied `query_id` → server-assigned CONNECTION_ID()
+    /// of the connection running it. Drained when the statement finishes.
+    /// A sibling `cancel_query` looks up the id and issues `KILL QUERY <id>`
+    /// on a side connection from the same pool.
+    query_conn_ids: Arc<DashMap<Uuid, u64>>,
 }
 
 impl MySqlDriver {
@@ -37,6 +42,7 @@ impl MySqlDriver {
         Self {
             pools: Arc::new(DashMap::new()),
             tunnels: Arc::new(DashMap::new()),
+            query_conn_ids: Arc::new(DashMap::new()),
         }
     }
 
@@ -276,12 +282,30 @@ impl Driver for MySqlDriver {
 
         let mut last: Option<QueryResult> = None;
         for stmt in &statements {
-            last = Some(run_single(&pool, stmt, limit).await?);
+            last = Some(
+                run_single(&pool, stmt, limit, req.query_id, &self.query_conn_ids).await?,
+            );
         }
 
         let mut out = last.expect("at least one statement");
         out.elapsed_ms = started.elapsed().as_millis() as u64;
         Ok(out)
+    }
+
+    async fn cancel_query(&self, profile: &ConnectionProfile, query_id: Uuid) -> Result<()> {
+        let conn_id = match self.query_conn_ids.get(&query_id) {
+            Some(entry) => *entry.value(),
+            None => return Ok(()),
+        };
+        let pool = self.pool_for(profile).await?;
+        // `KILL QUERY <id>` aborts the in-flight statement but keeps the
+        // connection alive. `KILL <id>` (without QUERY) would close the
+        // whole connection, which the pool would then have to replace.
+        sqlx::query(&format!("KILL QUERY {}", conn_id))
+            .execute(&pool)
+            .await
+            .map_err(map_sqlx_error)?;
+        Ok(())
     }
 
     async fn schema(&self, profile: &ConnectionProfile) -> Result<Schema> {
@@ -408,10 +432,34 @@ impl Driver for MySqlDriver {
     }
 }
 
-async fn run_single(pool: &MySqlPool, sql: &str, limit: usize) -> Result<QueryResult> {
+async fn run_single(
+    pool: &MySqlPool,
+    sql: &str,
+    limit: usize,
+    query_id: Option<Uuid>,
+    query_conn_ids: &Arc<DashMap<Uuid, u64>>,
+) -> Result<QueryResult> {
+    // Pin one pool connection for the lifetime of this statement so the
+    // CONNECTION_ID() we look up corresponds to the connection that
+    // actually executes the user's query — and so a sibling `KILL QUERY`
+    // hits the right thread.
+    let mut conn = pool.acquire().await.map_err(map_sqlx_error)?;
+
+    if let Some(qid) = query_id {
+        let conn_id: u64 = sqlx::query_scalar("SELECT CONNECTION_ID()")
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(map_sqlx_error)?;
+        query_conn_ids.insert(qid, conn_id);
+    }
+    let _guard = MysqlQueryIdGuard {
+        registry: query_conn_ids,
+        qid: query_id,
+    };
+
     if !is_query_statement(sql) {
         let result = sqlx::query(sql)
-            .execute(pool)
+            .execute(&mut *conn)
             .await
             .map_err(map_sqlx_error)?;
         return Ok(QueryResult {
@@ -424,7 +472,7 @@ async fn run_single(pool: &MySqlPool, sql: &str, limit: usize) -> Result<QueryRe
     }
 
     let mysql_rows = sqlx::query(sql)
-        .fetch_all(pool)
+        .fetch_all(&mut *conn)
         .await
         .map_err(map_sqlx_error)?;
 
@@ -458,4 +506,20 @@ async fn run_single(pool: &MySqlPool, sql: &str, limit: usize) -> Result<QueryRe
         elapsed_ms: 0,
         truncated,
     })
+}
+
+/// Drop guard mirroring the PG side — removes the (query_id, connection_id)
+/// entry on every exit path so a stale id can't accidentally KILL QUERY a
+/// connection that's been recycled by the pool.
+struct MysqlQueryIdGuard<'a> {
+    registry: &'a Arc<DashMap<Uuid, u64>>,
+    qid: Option<Uuid>,
+}
+
+impl Drop for MysqlQueryIdGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(qid) = self.qid {
+            self.registry.remove(&qid);
+        }
+    }
 }

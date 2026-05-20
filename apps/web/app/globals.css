@@ -75,3 +75,14 @@
     font-feature-settings: 'rlig' 1, 'calt' 1;
   }
 }
+
+@layer utilities {
+  /* Hide the native scrollbar entirely. Content still scrolls via wheel,
+     trackpad, keyboard, and touch — only the visual chrome is gone.
+     `scrollbar-width: none` is the CSS Scrollbars Module standard and
+     is honored by every modern Tauri webview (recent WebKit / WebView2 /
+     WebKitGTK), so no `::-webkit-scrollbar` fallback is needed. */
+  .scrollbar-hidden {
+    scrollbar-width: none;
+  }
+}

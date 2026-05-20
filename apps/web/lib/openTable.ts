@@ -52,14 +52,25 @@ export function openTableInSql(
   tableName: string,
 ): void {
   const sql = buildSelectStarSql(profile.engine, schemaName, tableName);
-  // sessionStorage handles the "navigating in" race where the event fires
-  // before the page mounts; the event handles the "already mounted" case.
+  loadSqlInWorkspace(router, profile, sql, true);
+}
+
+/** Generic "open arbitrary SQL in the connection's SQL workspace" helper.
+ *  Same transport as `openTableInSql` — sessionStorage covers the
+ *  navigation race, the custom event covers the already-mounted case.
+ *  Used by History / Snippets pages when the user clicks Load or Re-run. */
+export function loadSqlInWorkspace(
+  router: { push: (href: Route) => void },
+  profile: ConnectionProfile,
+  sql: string,
+  autoRun: boolean,
+): void {
   sessionStorage.setItem('dbstudio.pendingSql', sql);
-  sessionStorage.setItem('dbstudio.pendingSqlAutoRun', '1');
+  sessionStorage.setItem('dbstudio.pendingSqlAutoRun', autoRun ? '1' : '0');
   router.push(`/connections/${profile.id}/sql` as Route);
   setTimeout(() => {
     window.dispatchEvent(
-      new CustomEvent('palette-load-sql', { detail: { sql, autoRun: true } }),
+      new CustomEvent('palette-load-sql', { detail: { sql, autoRun } }),
     );
   }, 50);
 }

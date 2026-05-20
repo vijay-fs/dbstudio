@@ -50,6 +50,9 @@ pub enum DbError {
     )]
     HostKeyMismatch { expected: String, actual: String },
 
+    #[error("query cancelled by user")]
+    Cancelled,
+
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -72,6 +75,7 @@ impl DbError {
             DbError::SshTunnel(_) => "ssh_tunnel_error",
             DbError::HostKeyMissing => "host_key_missing",
             DbError::HostKeyMismatch { .. } => "host_key_mismatch",
+            DbError::Cancelled => "query_cancelled",
             DbError::Internal(_) => "internal_error",
         }
     }

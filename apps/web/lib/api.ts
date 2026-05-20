@@ -96,6 +96,14 @@ export const api = {
   reconnect(profile: ConnectionProfile): Promise<null> {
     return invoke('reconnect', { profile });
   },
+
+  // Signal the server to cancel the in-flight query identified by
+  // `queryId`. The pending `runQuery` promise will reject with code
+  // "query_cancelled" once the engine acknowledges the abort. No-op if
+  // the id is unknown — typically because the query already finished.
+  cancelQuery(profile: ConnectionProfile, queryId: string): Promise<null> {
+    return invoke('cancel_query', { profile, queryId });
+  },
 };
 
 export async function httpFetch<T>(path: string, init?: RequestInit): Promise<T> {

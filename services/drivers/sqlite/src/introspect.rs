@@ -56,6 +56,10 @@ pub async fn load_schema(pool: &SqlitePool) -> Result<Schema> {
                     default: c.default,
                     position: c.cid as u32 + 1,
                     comment: None,
+                    // SQLite has no native enum type — column constraints
+                    // implement "enum" semantics via CHECK clauses, which
+                    // we don't parse out here.
+                    enum_options: None,
                 })
                 .collect(),
             primary_key,

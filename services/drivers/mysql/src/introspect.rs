@@ -43,6 +43,10 @@ pub async fn load_schema(pool: &MySqlPool, database: &str) -> Result<Schema> {
                 default: col.default,
                 position: col.position,
                 comment: None,
+                // MySQL/MariaDB stores enum literals inline in the column
+                // type (`enum('a','b','c')`), so the frontend can parse
+                // them directly without a side-channel options list.
+                enum_options: None,
             });
     }
 

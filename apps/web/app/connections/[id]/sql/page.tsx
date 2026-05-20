@@ -6,19 +6,20 @@ import {
   Play,
   AlertCircle,
   Table2,
-  History,
   Plus,
   X,
   Bookmark,
   Activity,
+  Wand2,
+  Square,
+  Ban,
 } from 'lucide-react';
 
 import { AppShell } from '@/components/AppShell';
 import { Button } from '@/components/ui/button';
 import { SqlEditor, type SqlEditorHandle } from '@/components/SqlEditor';
 import { ResultTable } from '@/components/ResultTable';
-import { QueryHistoryPanel } from '@/components/QueryHistoryPanel';
-import { SnippetsPanel, SaveSnippetDialog } from '@/components/SnippetsPanel';
+import { SaveSnippetDialog } from '@/components/SnippetsPanel';
 import {
   PlanViewer,
   buildExplainSql,
@@ -56,7 +57,9 @@ function defaultSchemaFor(profile: { engine: string; database: string }): string
 
 type RunState =
   | { kind: 'idle' }
-  | { kind: 'running' }
+  /** `queryId` is the same uuid we pass in the QueryRequest so the Stop
+   *  button can target this exact run via `cancelQuery`. */
+  | { kind: 'running'; queryId: string }
   | { kind: 'ok'; result: QueryResult; sql: string }
   | { kind: 'error'; code: string; message: string };
 
@@ -66,7 +69,7 @@ type PlanState =
   | { kind: 'ok'; result: QueryResult }
   | { kind: 'error'; code: string; message: string };
 
-type BottomTab = 'results' | 'plan' | 'history' | 'snippets';
+type BottomTab = 'results' | 'plan';
 
 export default function SqlPage(props: { params: Promise<{ id: string }> }) {
   const { id } = use(props.params);
@@ -255,11 +258,18 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
     // the freshly-set active id immediately.
     const tabId = useSqlTabs.getState().byConnection[profile.id]?.activeId;
     if (!tabId) return;
-    setRunByTab((m) => ({ ...m, [tabId]: { kind: 'running' } }));
+    // Mint a fresh uuid per Run. The driver registers the backend PID /
+    // connection id against this token while the query is in flight; the
+    // Stop button reads it from `RunState` to issue the cancel.
+    const queryId = crypto.randomUUID();
+    setRunByTab((m) => ({ ...m, [tabId]: { kind: 'running', queryId } }));
     setBottomTab('results');
     const startedAt = performance.now();
     try {
-      const result = await api.runQuery(profile, { sql: sqlToRun });
+      const result = await api.runQuery(profile, {
+        sql: sqlToRun,
+        query_id: queryId,
+      });
       const elapsedMs = Math.round(performance.now() - startedAt);
       setRunByTab((m) => ({ ...m, [tabId]: { kind: 'ok', result, sql: sqlToRun } }));
       recordHistory({
@@ -277,14 +287,36 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
       const code = err.code ?? 'unknown';
       const message = err.message ?? String(e);
       setRunByTab((m) => ({ ...m, [tabId]: { kind: 'error', code, message } }));
-      recordHistory({
-        connectionId: profile.id,
-        sql: sqlToRun,
-        elapsedMs,
-        status: 'error',
-        errorCode: code,
-        errorMessage: message,
-      });
+      // Don't pollute history with user-initiated cancels — the entry
+      // would otherwise show up as a red "error" row for an event the
+      // user already knows they triggered.
+      if (code !== 'query_cancelled') {
+        recordHistory({
+          connectionId: profile.id,
+          sql: sqlToRun,
+          elapsedMs,
+          status: 'error',
+          errorCode: code,
+          errorMessage: message,
+        });
+      }
+    }
+  };
+
+  /** Signal the server to abort the active tab's running query. The Run
+   *  promise will reject with `query_cancelled` when the engine
+   *  acknowledges; we don't optimistically clear the running state here
+   *  because the cancel can still race with the query completing. */
+  const onStop = async () => {
+    if (!profile) return;
+    const tabId = useSqlTabs.getState().byConnection[profile.id]?.activeId;
+    if (!tabId) return;
+    const current = runByTab[tabId];
+    if (current?.kind !== 'running') return;
+    try {
+      await api.cancelQuery(profile, current.queryId);
+    } catch {
+      // Best-effort — the original Run will surface any real failure.
     }
   };
 
@@ -314,6 +346,16 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
             <Button
               size="sm"
               variant="outline"
+              onClick={() => editorRef.current?.format()}
+              disabled={!activeTab?.sql.trim()}
+              title="Format SQL (Cmd/Ctrl+Shift+F)"
+            >
+              <Wand2 className="h-3 w-3" />
+              Format
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
               onClick={() => setSaveSnippetOpen(true)}
               disabled={!activeTab?.sql.trim()}
               title="Save this query as a snippet"
@@ -339,18 +381,22 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
                 Explain
               </Button>
             )}
-            <Button
-              size="sm"
-              onClick={() => editorRef.current?.run()}
-              disabled={state.kind === 'running'}
-            >
-              {state.kind === 'running' ? (
-                <Loader2 className="h-3 w-3 animate-spin" />
-              ) : (
+            {state.kind === 'running' ? (
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={() => void onStop()}
+                title="Cancel the running query"
+              >
+                <Square className="h-3 w-3" />
+                Stop
+              </Button>
+            ) : (
+              <Button size="sm" onClick={() => editorRef.current?.run()}>
                 <Play className="h-3 w-3" />
-              )}
-              Run
-            </Button>
+                Run
+              </Button>
+            )}
           </div>
         </header>
 
@@ -409,14 +455,6 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
                     Plan
                   </TabsTrigger>
                 )}
-                <TabsTrigger value="history" className="gap-1.5">
-                  <History className="h-3 w-3" />
-                  History
-                </TabsTrigger>
-                <TabsTrigger value="snippets" className="gap-1.5">
-                  <Bookmark className="h-3 w-3" />
-                  Snippets
-                </TabsTrigger>
               </TabsList>
               <TabsContent value="results" className="mt-0 flex-1 overflow-hidden">
                 {state.kind === 'idle' && (
@@ -427,20 +465,36 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
                 {state.kind === 'running' && (
                   <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
                     <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                    Running...
+                    Running... click Stop to cancel.
                   </div>
                 )}
-                {state.kind === 'error' && (
-                  <div className="p-5">
-                    <div className="flex items-center gap-2 text-destructive">
-                      <AlertCircle className="h-4 w-4" />
-                      <span className="text-sm font-semibold">Query failed</span>
+                {state.kind === 'error' &&
+                  (state.code === 'query_cancelled' ? (
+                    // User-initiated abort — render in muted tones rather
+                    // than the red "Query failed" treatment we use for
+                    // real errors. This is the success outcome of Stop.
+                    <div className="p-5">
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        <Ban className="h-4 w-4" />
+                        <span className="text-sm font-semibold">Query cancelled</span>
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        The server acknowledged the cancel and aborted the
+                        running statement.
+                      </p>
                     </div>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      <span className="font-mono">{state.code}</span> · {state.message}
-                    </p>
-                  </div>
-                )}
+                  ) : (
+                    <div className="p-5">
+                      <div className="flex items-center gap-2 text-destructive">
+                        <AlertCircle className="h-4 w-4" />
+                        <span className="text-sm font-semibold">Query failed</span>
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        <span className="font-mono">{state.code}</span> ·{' '}
+                        {state.message}
+                      </p>
+                    </div>
+                  ))}
                 {state.kind === 'ok' && (
                   <ResultTable result={state.result} editable={editable} />
                 )}
@@ -481,37 +535,6 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
                   )}
                 </TabsContent>
               )}
-              <TabsContent value="history" className="mt-0 flex-1 overflow-hidden">
-                <QueryHistoryPanel
-                  connectionId={profile.id}
-                  onLoad={(s) => {
-                    loadIntoNewTab(profile.id, s);
-                    setBottomTab('results');
-                  }}
-                  onRerun={(s) => {
-                    const tab = loadIntoNewTab(profile.id, s);
-                    setBottomTab('results');
-                    // Defer the run so the new tab is the active one when
-                    // onRun reads `activeTab`.
-                    setTimeout(() => void onRun(s), 0);
-                    void tab;
-                  }}
-                />
-              </TabsContent>
-              <TabsContent value="snippets" className="mt-0 flex-1 overflow-hidden">
-                <SnippetsPanel
-                  connectionId={profile.id}
-                  onLoad={(s) => {
-                    loadIntoNewTab(profile.id, s);
-                    setBottomTab('results');
-                  }}
-                  onRerun={(s) => {
-                    loadIntoNewTab(profile.id, s);
-                    setBottomTab('results');
-                    setTimeout(() => void onRun(s), 0);
-                  }}
-                />
-              </TabsContent>
             </Tabs>
           </ResizablePanel>
         </ResizablePanelGroup>
@@ -525,7 +548,6 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
           if (!activeTab) return;
           createSnippet(profile.id, name, activeTab.sql);
           setSaveSnippetOpen(false);
-          setBottomTab('snippets');
         }}
       />
     </AppShell>
@@ -547,7 +569,7 @@ function TabBar({
 }) {
   return (
     <div className="flex shrink-0 items-center gap-0.5 border-b bg-muted/30 px-2">
-      <div className="flex flex-1 overflow-x-auto">
+      <div className="scrollbar-hidden flex flex-1 overflow-x-auto">
         {tabs.map((tab, i) => {
           const active = tab.id === activeId;
           return (

@@ -47,6 +47,7 @@ pub fn run() {
             commands::insert_row,
             commands::delete_row,
             commands::reconnect,
+            commands::cancel_query,
         ])
         .run(tauri::generate_context!())
         .expect("error while running dbstudio");

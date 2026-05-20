@@ -11,6 +11,13 @@ pub fn map_sqlx_error(err: SqlxError) -> DbError {
         SqlxError::Database(ref db_err) => {
             let code = db_err.code().unwrap_or_default().to_string();
             let msg = db_err.message().to_string();
+            // SQLSTATE 57014 = `query_canceled` — raised when another
+            // session calls pg_cancel_backend() on this query's PID. We
+            // surface a dedicated DbError variant so the UI can tell
+            // "I aborted this" apart from a real failure.
+            if code == "57014" {
+                return DbError::Cancelled;
+            }
             // Postgres SQLSTATE classes:
             //   28xxx invalid authorization
             //   42xxx syntax error or access rule violation

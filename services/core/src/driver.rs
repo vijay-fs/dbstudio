@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use uuid::Uuid;
 
 use crate::{
     connection::ConnectionProfile,
@@ -39,6 +40,13 @@ pub trait Driver: Send + Sync {
     /// DELETE the row matching the supplied PK. Returns rows_affected —
     /// callers should refuse to treat anything but 1 as success.
     async fn delete_row(&self, profile: &ConnectionProfile, req: RowDelete) -> Result<u64>;
+
+    /// Cancel an in-flight `execute` whose `QueryRequest::query_id` matches
+    /// `query_id`. Engines that support this open a side connection and
+    /// signal the original backend (`pg_cancel_backend`, `KILL QUERY`).
+    /// Returns `Ok(())` for an unknown id — the query may have already
+    /// finished by the time the cancel arrived, which is harmless.
+    async fn cancel_query(&self, profile: &ConnectionProfile, query_id: Uuid) -> Result<()>;
 
     /// Close any pools associated with the profile.
     async fn disconnect(&self, profile: &ConnectionProfile) -> Result<()>;

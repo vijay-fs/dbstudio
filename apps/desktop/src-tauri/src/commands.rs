@@ -132,6 +132,24 @@ pub async fn reconnect(
     Ok(())
 }
 
+/// Cancel an in-flight query identified by the caller's `query_id`. The
+/// frontend generates a fresh UUID per Run and passes it on the
+/// `QueryRequest`; clicking Stop fires this command with the same id, and
+/// the driver opens a side channel to signal the original backend. No-op
+/// when the id is unknown (the query may have already finished).
+#[tauri::command]
+pub async fn cancel_query(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+    query_id: Uuid,
+) -> CommandResult<()> {
+    let driver = state
+        .driver_for(profile.engine)
+        .ok_or_else(|| DbError::Unsupported(format!("engine {:?}", profile.engine)))?;
+    driver.cancel_query(&profile, query_id).await?;
+    Ok(())
+}
+
 // ---- secrets ---------------------------------------------------------------
 // Secrets only cross the wire on save (set) or during dev (`get_secret`).
 // Drivers themselves read directly from `core::secrets` server-side, so the

@@ -251,6 +251,18 @@ impl Driver for SqliteDriver {
         Ok(result.rows_affected())
     }
 
+    async fn cancel_query(&self, _profile: &ConnectionProfile, _query_id: Uuid) -> Result<()> {
+        // SQLite queries can be interrupted via `sqlite3_interrupt`, but
+        // sqlx-sqlite doesn't expose it through a stable API and getting
+        // the raw handle out of a pooled connection is fragile. For now
+        // surface "unsupported" — SQLite queries in this app are typically
+        // short enough that mid-flight cancel isn't critical, and the
+        // frontend can still abandon the pending promise locally.
+        Err(DbError::Unsupported(
+            "SQLite does not support mid-flight query cancel in this build".to_string(),
+        ))
+    }
+
     async fn disconnect(&self, profile: &ConnectionProfile) -> Result<()> {
         if let Some((_, pool)) = self.pools.remove(&profile.id) {
             pool.close().await;

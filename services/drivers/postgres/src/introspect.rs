@@ -16,12 +16,30 @@ pub async fn load_schema(pool: &PgPool) -> Result<Schema> {
     let fks = load_foreign_keys(pool).await?;
     let indexes = load_indexes(pool).await?;
     let views = load_views(pool).await?;
+    // Map of (enum_schema, enum_type_name) -> options, used to resolve
+    // user-defined enum columns into their value lists. Empty on databases
+    // that don't define any enum types.
+    let enums = load_enum_types(pool).await?;
 
     // Group everything by (schema, table). BTreeMap so order is stable.
     let mut grouped: BTreeMap<(String, String), Table> = BTreeMap::new();
 
     for col in columns {
         let key = (col.schema.clone(), col.table.clone());
+        // `information_schema.columns.data_type` returns "USER-DEFINED" for
+        // every column whose type isn't a SQL built-in (enums, domains,
+        // composite types). For an enum, the real type name lives in
+        // `udt_name`, and we resolve its options via pg_enum. Replace the
+        // unhelpful "USER-DEFINED" with the actual type name so the user
+        // sees `mood` instead of a placeholder.
+        let (data_type, enum_options) = if col.data_type.eq_ignore_ascii_case("USER-DEFINED") {
+            let udt_key = (col.udt_schema.clone(), col.udt_name.clone());
+            let options = enums.get(&udt_key).cloned();
+            (col.udt_name.clone(), options)
+        } else {
+            (col.data_type, None)
+        };
+
         grouped
             .entry(key)
             .or_insert_with(|| Table {
@@ -36,11 +54,12 @@ pub async fn load_schema(pool: &PgPool) -> Result<Schema> {
             .columns
             .push(Column {
                 name: col.name,
-                data_type: col.data_type,
+                data_type,
                 nullable: col.nullable,
                 default: col.default,
                 position: col.position,
                 comment: None,
+                enum_options,
             });
     }
 
@@ -132,13 +151,33 @@ struct ColumnRow {
     nullable: bool,
     default: Option<String>,
     position: u32,
+    /// Underlying type schema (e.g. `public`) — same as `data_type` for
+    /// built-ins, but for `USER-DEFINED` columns this points at where the
+    /// custom type lives so we can join with pg_enum.
+    udt_schema: String,
+    /// Underlying type name (e.g. `mood` for `CREATE TYPE mood AS ENUM`).
+    udt_name: String,
 }
 
 async fn load_columns(pool: &PgPool) -> Result<Vec<ColumnRow>> {
-    let rows = sqlx::query_as::<_, (String, String, String, String, String, Option<String>, i32)>(
+    let rows = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            i32,
+            String,
+            String,
+        ),
+    >(
         r#"
         SELECT table_schema, table_name, column_name, data_type,
-               is_nullable, column_default, ordinal_position
+               is_nullable, column_default, ordinal_position,
+               udt_schema, udt_name
         FROM information_schema.columns
         WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
         ORDER BY table_schema, table_name, ordinal_position
@@ -150,16 +189,58 @@ async fn load_columns(pool: &PgPool) -> Result<Vec<ColumnRow>> {
 
     Ok(rows
         .into_iter()
-        .map(|(schema, table, name, data_type, is_nullable, default, position)| ColumnRow {
-            schema,
-            table,
-            name,
-            data_type,
-            nullable: is_nullable == "YES",
-            default,
-            position: position as u32,
-        })
+        .map(
+            |(
+                schema,
+                table,
+                name,
+                data_type,
+                is_nullable,
+                default,
+                position,
+                udt_schema,
+                udt_name,
+            )| ColumnRow {
+                schema,
+                table,
+                name,
+                data_type,
+                nullable: is_nullable == "YES",
+                default,
+                position: position as u32,
+                udt_schema,
+                udt_name,
+            },
+        )
         .collect())
+}
+
+/// Read every user-defined enum type into a `(schema, type_name) -> labels`
+/// map. The labels come back in `enumsortorder` so the UI shows them in
+/// the same order the developer declared them with `CREATE TYPE`. Returns
+/// an empty map when the database has no enums.
+async fn load_enum_types(pool: &PgPool) -> Result<BTreeMap<(String, String), Vec<String>>> {
+    let rows = sqlx::query_as::<_, (String, String, String)>(
+        r#"
+        SELECT n.nspname AS schema,
+               t.typname AS name,
+               e.enumlabel AS label
+        FROM pg_type t
+        JOIN pg_enum e      ON e.enumtypid = t.oid
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+        ORDER BY n.nspname, t.typname, e.enumsortorder
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(map_sqlx_error)?;
+
+    let mut out: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+    for (schema, name, label) in rows {
+        out.entry((schema, name)).or_default().push(label);
+    }
+    Ok(out)
 }
 
 struct PrimaryKeyRow {

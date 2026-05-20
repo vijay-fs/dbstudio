@@ -8,13 +8,15 @@ import {
   Database,
   Plus,
   Workflow,
-  Terminal as TerminalIcon,
   Pencil,
   Trash2,
   Table2,
   Search,
   ChevronDown,
   ChevronRight,
+  MoreHorizontal,
+  History,
+  Bookmark,
 } from 'lucide-react';
 
 import { useConnections } from '@/store/connections';
@@ -31,6 +33,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { CommandPalette } from '@/components/CommandPalette';
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -84,7 +93,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </Link>
         </div>
 
-        <nav className="flex-1 overflow-y-auto px-2 pb-4">
+        <nav className="scrollbar-hidden flex-1 overflow-y-auto px-2 pb-4">
           {profiles.length === 0 ? (
             <p className="px-3 py-2 text-xs text-muted-foreground">
               No connections yet. Click + to add one.
@@ -92,59 +101,42 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           ) : (
             <ul className="space-y-0.5">
               {profiles.map((p) => {
-                const href = `/connections/${p.id}/schema` as Route;
+                // Default connection click lands in the SQL workspace — the
+                // primary daily-driver surface. Schema, History and Snippets
+                // are accessible from the per-row kebab menu, which keeps
+                // the sidebar uncluttered when there are many connections.
+                const href = `/connections/${p.id}/sql` as Route;
                 const active = pathname?.startsWith(`/connections/${p.id}`);
                 return (
                   <li key={p.id}>
-                    <Link
-                      href={href}
+                    <div
                       className={cn(
-                        'flex items-center gap-2 rounded-md px-3 py-1.5 text-xs',
+                        'group flex items-center gap-1 rounded-md pl-3 pr-1 text-xs',
                         active
                           ? 'bg-background font-medium text-foreground shadow-sm'
                           : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
                       )}
                     >
-                      <Database className="h-3.5 w-3.5 shrink-0" />
-                      <span className="flex-1 truncate">{p.name}</span>
-                      <span className="text-[9px] uppercase tracking-wider text-muted-foreground">
-                        {ENGINE_LABELS[p.engine]}
-                      </span>
-                    </Link>
+                      <Link
+                        href={href}
+                        className="flex min-w-0 flex-1 items-center gap-2 py-1.5"
+                      >
+                        <Database className="h-3.5 w-3.5 shrink-0" />
+                        <span className="flex-1 truncate">{p.name}</span>
+                        <span className="text-[9px] uppercase tracking-wider text-muted-foreground">
+                          {ENGINE_LABELS[p.engine]}
+                        </span>
+                      </Link>
+                      <ConnectionMenu
+                        profileId={p.id}
+                        onDelete={() => askDelete(p.id, p.name)}
+                        active={Boolean(active)}
+                      />
+                    </div>
                     {active && (
-                      <ul className="mt-0.5 ml-7 space-y-0.5">
-                        <SubNavLink
-                          href={`/connections/${p.id}/schema` as Route}
-                          icon={<Workflow className="h-3 w-3" />}
-                          label="Schema"
-                          active={pathname === `/connections/${p.id}/schema`}
-                        />
-                        <SubNavLink
-                          href={`/connections/${p.id}/sql` as Route}
-                          icon={<TerminalIcon className="h-3 w-3" />}
-                          label="SQL"
-                          active={pathname === `/connections/${p.id}/sql`}
-                        />
-                        <SubNavLink
-                          href={`/connections/${p.id}/edit` as Route}
-                          icon={<Pencil className="h-3 w-3" />}
-                          label="Edit"
-                          active={pathname === `/connections/${p.id}/edit`}
-                        />
-                        <li>
-                          <button
-                            type="button"
-                            onClick={() => askDelete(p.id, p.name)}
-                            className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-[11px] text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                          >
-                            <Trash2 className="h-3 w-3" />
-                            <span>Delete</span>
-                          </button>
-                        </li>
-                        <li className="pt-1">
-                          <TableNav profile={p} pathname={pathname ?? ''} router={router} />
-                        </li>
-                      </ul>
+                      <div className="mt-1 ml-7">
+                        <TableNav profile={p} pathname={pathname ?? ''} router={router} />
+                      </div>
                     )}
                   </li>
                 );
@@ -158,7 +150,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
 
-      <main className="flex min-h-0 flex-col overflow-y-auto">{children}</main>
+      <main className="scrollbar-hidden flex min-h-0 flex-col overflow-y-auto">
+        {children}
+      </main>
 
       <Dialog
         open={pendingDelete != null}
@@ -190,32 +184,73 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   );
 }
 
-function SubNavLink({
-  href,
-  icon,
-  label,
+/** Per-connection kebab menu. Holds the "rare" actions — Schema, History,
+ *  Snippets, Edit, Delete — so the sidebar row stays clean for the common
+ *  click-to-open-SQL flow. Each item navigates via <Link>-equivalent
+ *  prefetched anchor; Delete is destructive and goes through the parent's
+ *  confirm dialog. */
+function ConnectionMenu({
+  profileId,
+  onDelete,
   active,
 }: {
-  href: Route;
-  icon: React.ReactNode;
-  label: string;
+  profileId: string;
+  onDelete: () => void;
   active: boolean;
 }) {
   return (
-    <li>
-      <Link
-        href={href}
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        aria-label="Connection options"
         className={cn(
-          'flex items-center gap-2 rounded-md px-2 py-1 text-[11px]',
+          'shrink-0 rounded p-1 text-muted-foreground transition-opacity',
+          'hover:bg-accent hover:text-foreground focus:outline-none focus:ring-1 focus:ring-ring',
+          // Always visible on the active row; hover-reveal otherwise so
+          // idle connections in the list stay visually quiet.
           active
-            ? 'text-foreground font-medium'
-            : 'text-muted-foreground hover:text-foreground',
+            ? 'opacity-80 hover:opacity-100'
+            : 'opacity-0 group-hover:opacity-80 focus:opacity-100',
         )}
+        onClick={(e) => e.stopPropagation()}
       >
-        {icon}
-        <span>{label}</span>
-      </Link>
-    </li>
+        <MoreHorizontal className="h-3.5 w-3.5" />
+      </DropdownMenuTrigger>
+      {/* Open downward from the kebab and right-align so the menu stays
+          fully inside the 260px sidebar column. `side="right"` would push
+          it into the main content area and cover the SQL workspace's tab
+          bar — exactly what we want to avoid. */}
+      <DropdownMenuContent align="end" side="bottom" sideOffset={4}>
+        <DropdownMenuItem asChild>
+          <Link href={`/connections/${profileId}/schema` as Route}>
+            <Workflow className="h-3 w-3" />
+            Schema
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild>
+          <Link href={`/connections/${profileId}/history` as Route}>
+            <History className="h-3 w-3" />
+            History
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild>
+          <Link href={`/connections/${profileId}/snippets` as Route}>
+            <Bookmark className="h-3 w-3" />
+            Saved snippets
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem asChild>
+          <Link href={`/connections/${profileId}/edit` as Route}>
+            <Pencil className="h-3 w-3" />
+            Edit
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuItem destructive onSelect={onDelete}>
+          <Trash2 className="h-3 w-3" />
+          Delete
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -347,7 +382,7 @@ function TableNav({
               spellCheck={false}
             />
           </div>
-          <ul className="max-h-[44vh] space-y-0 overflow-y-auto px-1 pt-1">
+          <ul className="scrollbar-hidden max-h-[44vh] space-y-0 overflow-y-auto px-1 pt-1">
             {filtered.length === 0 ? (
               <li className="px-1.5 py-1 text-[10px] text-muted-foreground">
                 No matches.
