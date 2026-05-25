@@ -107,7 +107,7 @@ export function loadSqlInWorkspace(
 ): void {
   sessionStorage.setItem('dbstudio.pendingSql', sql);
   sessionStorage.setItem('dbstudio.pendingSqlAutoRun', autoRun ? '1' : '0');
-  router.push(`/connections/${profile.id}/sql` as Route);
+  router.push(`/sql?cid=${profile.id}` as Route);
   setTimeout(() => {
     window.dispatchEvent(
       new CustomEvent('palette-load-sql', { detail: { sql, autoRun } }),

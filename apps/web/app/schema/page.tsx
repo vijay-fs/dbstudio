@@ -1,7 +1,7 @@
 'use client';
 
-import { use, useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useEffect, useState } from 'react';
+import { useSearchParams, useRouter } from 'next/navigation';
 import { Loader2, AlertCircle, RefreshCw, Plug } from 'lucide-react';
 
 import { AppShell } from '@/components/AppShell';
@@ -20,8 +20,11 @@ type LoadState =
   | { kind: 'ok'; schema: Schema }
   | { kind: 'error'; code: string; message: string };
 
-export default function SchemaPage(props: { params: Promise<{ id: string }> }) {
-  const { id } = use(props.params);
+// Connection id flows in via the `cid` search param. Static
+// routes only — no [id] segment — so the file ships at /sql/index.html
+// (and similar) and the Tauri asset protocol always finds it.
+function SchemaPageInner() {
+  const id = useSearchParams().get('cid') ?? '';
   const profile = useConnections((s) => s.profiles.find((p) => p.id === id));
   const router = useRouter();
   const loadSchema = useSchemaCache((s) => s.load);
@@ -189,5 +192,17 @@ function looksLikeStaleConnection(code: string, message: string): boolean {
     m.includes('broken pipe') ||
     m.includes('connection reset') ||
     m.includes('got 0 bytes')
+  );
+}
+
+// Static export requires useSearchParams() to be inside a Suspense
+// boundary so Next can split the client-bailout point. The inner
+// component does the real work; this wrapper exists only to satisfy
+// the build constraint.
+export default function SchemaPage() {
+  return (
+    <Suspense fallback={null}>
+      <SchemaPageInner />
+    </Suspense>
   );
 }

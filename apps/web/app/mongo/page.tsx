@@ -1,14 +1,19 @@
 'use client';
 
-import { use } from 'react';
+import { Suspense } from 'react';
+
+import { useSearchParams } from 'next/navigation';
 
 import { AppShell } from '@/components/AppShell';
 import { MongoBrowser } from '@/components/MongoBrowser';
 import { useConnections } from '@/store/connections';
 import { ENGINE_LABELS } from '@/lib/types';
 
-export default function MongoPage(props: { params: Promise<{ id: string }> }) {
-  const { id } = use(props.params);
+// Connection id flows in via the `cid` search param. Static
+// routes only — no [id] segment — so the file ships at /sql/index.html
+// (and similar) and the Tauri asset protocol always finds it.
+function MongoPageInner() {
+  const id = useSearchParams().get('cid') ?? '';
   const profile = useConnections((s) => s.profiles.find((p) => p.id === id));
 
   if (!profile) {
@@ -52,5 +57,17 @@ export default function MongoPage(props: { params: Promise<{ id: string }> }) {
         </div>
       </div>
     </AppShell>
+  );
+}
+
+// Static export requires useSearchParams() to be inside a Suspense
+// boundary so Next can split the client-bailout point. The inner
+// component does the real work; this wrapper exists only to satisfy
+// the build constraint.
+export default function MongoPage() {
+  return (
+    <Suspense fallback={null}>
+      <MongoPageInner />
+    </Suspense>
   );
 }

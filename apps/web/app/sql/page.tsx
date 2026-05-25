@@ -1,7 +1,7 @@
 'use client';
 
-import { use, useEffect, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useEffect, useRef, useState } from 'react';
+import { useSearchParams, useRouter } from 'next/navigation';
 import {
   Loader2,
   Play,
@@ -75,8 +75,11 @@ type PlanState =
 
 type BottomTab = 'results' | 'plan';
 
-export default function SqlPage(props: { params: Promise<{ id: string }> }) {
-  const { id } = use(props.params);
+// Connection id flows in via the `cid` search param. Static
+// routes only — no [id] segment — so the file ships at /sql/index.html
+// (and similar) and the Tauri asset protocol always finds it.
+function SqlPageInner() {
+  const id = useSearchParams().get('cid') ?? '';
   const profile = useConnections((s) => s.profiles.find((p) => p.id === id));
   const router = useRouter();
   const editorRef = useRef<SqlEditorHandle>(null);
@@ -726,5 +729,17 @@ function TabBar({
         <Plus className="h-3.5 w-3.5" />
       </button>
     </div>
+  );
+}
+
+// Static export requires useSearchParams() to be inside a Suspense
+// boundary so Next can split the client-bailout point. The inner
+// component does the real work; this wrapper exists only to satisfy
+// the build constraint.
+export default function SqlPage() {
+  return (
+    <Suspense fallback={null}>
+      <SqlPageInner />
+    </Suspense>
   );
 }

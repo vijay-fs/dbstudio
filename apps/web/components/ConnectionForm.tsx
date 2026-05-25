@@ -339,7 +339,7 @@ export function ConnectionForm({ initial }: { initial: ConnectionProfile }) {
     setPasswordInput('');
     setTunnelPasswordInput('');
     setTunnelPassphraseInput('');
-    router.push(`/connections/${profile.id}/schema` as Route);
+    router.push(`/schema?cid=${profile.id}` as Route);
   };
 
   const username = profile.auth.kind === 'password' ? profile.auth.username : '';
@@ -389,8 +389,9 @@ export function ConnectionForm({ initial }: { initial: ConnectionProfile }) {
             <CardTitle>Database file</CardTitle>
             <CardDescription>
               Absolute path to the SQLite file. The file is opened in
-              read-write mode; create it via <code>sqlite3 mydb.db ".databases"</code>
-              first if it doesn&apos;t exist.
+              read-write mode; create it via{' '}
+              <code>sqlite3 mydb.db &quot;.databases&quot;</code> first if it
+              doesn&apos;t exist.
             </CardDescription>
           </CardHeader>
           <CardContent>

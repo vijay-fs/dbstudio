@@ -135,7 +135,7 @@ export function CommandPalette() {
     // The SQL page picks this up on mount via the `palette-load-sql` event.
     sessionStorage.setItem('dbstudio.pendingSql', sql);
     sessionStorage.setItem('dbstudio.pendingSqlEntry', id);
-    router.push(`/connections/${activeConnectionId}/sql` as Route);
+    router.push(`/sql?cid=${activeConnectionId}` as Route);
     // Fire the event after the navigation tick so the SQL page is mounted.
     setTimeout(() => {
       window.dispatchEvent(new CustomEvent('palette-load-sql', { detail: { sql } }));
@@ -185,7 +185,7 @@ export function CommandPalette() {
                   meta={`${ENGINE_LABELS[p.engine]} · Schema`}
                   // Keywords boost match scoring for cmdk's built-in fuzzy.
                   keywords={[p.engine, ENGINE_LABELS[p.engine], 'schema']}
-                  onSelect={() => go(`/connections/${p.id}/schema` as Route)}
+                  onSelect={() => go(`/schema?cid=${p.id}` as Route)}
                 />
               ))}
               {profiles.map((p) => (
@@ -195,7 +195,7 @@ export function CommandPalette() {
                   label={p.name}
                   meta={`${ENGINE_LABELS[p.engine]} · SQL workspace`}
                   keywords={[p.engine, ENGINE_LABELS[p.engine], 'sql', 'query']}
-                  onSelect={() => go(`/connections/${p.id}/sql` as Route)}
+                  onSelect={() => go(`/sql?cid=${p.id}` as Route)}
                 />
               ))}
               {profiles.map((p) => (
@@ -205,7 +205,7 @@ export function CommandPalette() {
                   label={p.name}
                   meta={`${ENGINE_LABELS[p.engine]} · Edit`}
                   keywords={['edit', 'settings']}
-                  onSelect={() => go(`/connections/${p.id}/edit` as Route)}
+                  onSelect={() => go(`/edit?cid=${p.id}` as Route)}
                 />
               ))}
             </Command.Group>

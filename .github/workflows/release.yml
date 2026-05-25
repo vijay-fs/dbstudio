@@ -1,0 +1,84 @@
+# Build dbstudio installers for macOS and Windows. Triggered manually
+# via the Actions tab ("Run workflow") or by pushing a tag that
+# starts with `v` (e.g. `v0.1.0`). The Windows runner is the only
+# way to produce a .msi/.exe — Tauri's WiX/NSIS bundlers need
+# Windows-native tooling and don't cross-compile reliably from
+# macOS or Linux.
+#
+# Artifacts upload to the workflow run. For a real release that ships
+# auto-updates, hook up a code-signing cert (Apple Developer ID for
+# .app/.dmg, Windows EV cert for .msi/.exe). Until then the user is
+# bothered by Gatekeeper / SmartScreen on first launch — annoying but
+# not blocking.
+
+name: Build installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  macos:
+    name: macOS (aarch64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Cache only the desktop crate's build dir; the workspace
+          # itself is too large to cache wholesale on the free tier.
+          workspaces: apps/desktop/src-tauri -> ../../target
+      - name: Install JS deps
+        run: pnpm install --frozen-lockfile
+      - name: Build app
+        working-directory: apps/desktop
+        run: pnpm tauri build --bundles dmg,app
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-aarch64
+          path: |
+            target/release/bundle/dmg/*.dmg
+            target/release/bundle/macos/*.app
+
+  windows:
+    name: Windows (x86_64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> ../../target
+      - name: Install JS deps
+        run: pnpm install --frozen-lockfile
+      - name: Build app
+        working-directory: apps/desktop
+        # NSIS produces a self-contained .exe installer; MSI is the
+        # WiX-built MSI for enterprise deployment. Build both so the
+        # user can pick whichever suits them.
+        run: pnpm tauri build --bundles nsis,msi
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64
+          path: |
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/msi/*.msi

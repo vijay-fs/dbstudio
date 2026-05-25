@@ -62,8 +62,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // effect here covers every sub-page (sql/schema/history/snippets/edit)
   // so each individual page doesn't have to remember to do it.
   useEffect(() => {
-    const m = pathname?.match(/^\/connections\/([^/]+)(\/|$)/);
-    const cid = m?.[1];
+    // After the static-export refactor the connection id lives in
+    // the `?cid=` search param rather than a path segment. Read it
+    // from the URL directly since usePathname() doesn't include
+    // query strings.
+    const url =
+      typeof window !== 'undefined' ? new URL(window.location.href) : null;
+    const cid = url?.searchParams.get('cid') ?? null;
     if (cid && profiles.some((p) => p.id === cid)) {
       markUsed(cid);
     }
@@ -108,7 +113,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
     remove(id);
     setPendingDelete(null);
-    if (pathname?.startsWith(`/connections/${id}`)) {
+    // The deleted connection's id may live in `?cid=`; if the
+    // current page is scoped to it, bounce back to the list.
+    const url =
+      typeof window !== 'undefined' ? new URL(window.location.href) : null;
+    if (url?.searchParams.get('cid') === id) {
       router.push('/connections' as Route);
     }
   };
@@ -144,18 +153,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               {sortedProfiles.map((p) => {
                 // Default connection click lands in the engine's
                 // primary workspace — SQL editor for SQL engines,
-                // document browser for MongoDB, key/value browser for
-                // Redis. NoSQL engines don't have a SQL editor at all
-                // so we route them straight to the workspace that
-                // matches their semantics.
+                // document browser for MongoDB, key/value browser
+                // for Redis. NoSQL engines don't have a SQL editor
+                // at all so we route them straight to the workspace
+                // that matches their semantics.
                 const defaultPath =
                   p.engine === 'mongodb'
-                    ? 'mongo'
+                    ? '/mongo'
                     : p.engine === 'redis'
-                      ? 'redis'
-                      : 'sql';
-                const href = `/connections/${p.id}/${defaultPath}` as Route;
-                const active = pathname?.startsWith(`/connections/${p.id}`);
+                      ? '/redis'
+                      : '/sql';
+                const href = `${defaultPath}?cid=${p.id}` as Route;
+                // "Active" is now a search-param check rather than a
+                // path prefix. usePathname() doesn't include query
+                // strings, so we read the URL directly each render
+                // (cheap, no observability needed for an idle UI).
+                const currentCid =
+                  typeof window !== 'undefined'
+                    ? new URL(window.location.href).searchParams.get('cid')
+                    : null;
+                const active = currentCid === p.id;
                 return (
                   <li key={p.id}>
                     <div
@@ -347,19 +364,19 @@ function ConnectionMenu({
         {sqlOnly && (
           <>
             <DropdownMenuItem asChild>
-              <Link href={`/connections/${profileId}/schema` as Route}>
+              <Link href={`/schema?cid=${profileId}` as Route}>
                 <Workflow className="h-3 w-3" />
                 Schema
               </Link>
             </DropdownMenuItem>
             <DropdownMenuItem asChild>
-              <Link href={`/connections/${profileId}/history` as Route}>
+              <Link href={`/history?cid=${profileId}` as Route}>
                 <History className="h-3 w-3" />
                 History
               </Link>
             </DropdownMenuItem>
             <DropdownMenuItem asChild>
-              <Link href={`/connections/${profileId}/snippets` as Route}>
+              <Link href={`/snippets?cid=${profileId}` as Route}>
                 <Bookmark className="h-3 w-3" />
                 Saved snippets
               </Link>
@@ -368,7 +385,7 @@ function ConnectionMenu({
           </>
         )}
         <DropdownMenuItem asChild>
-          <Link href={`/connections/${profileId}/edit` as Route}>
+          <Link href={`/edit?cid=${profileId}` as Route}>
             <Pencil className="h-3 w-3" />
             Edit
           </Link>

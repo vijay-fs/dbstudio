@@ -55,7 +55,7 @@ export default function ConnectionsPage() {
             {profiles.map((p) => (
               <li key={p.id}>
                 <Link
-                  href={`/connections/${p.id}/schema`}
+                  href={`/schema?cid=${p.id}`}
                   className="block rounded-lg border bg-card p-4 transition-colors hover:border-foreground/20 hover:bg-accent/50"
                 >
                   <div className="mb-2 flex items-center gap-2">
