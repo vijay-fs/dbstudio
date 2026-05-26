@@ -74,6 +74,38 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
   }, [pathname, profiles, markUsed]);
 
+  // Global Cmd/Ctrl+A guard. Without this, the webview's default
+  // behaviour is "select every piece of text on the page" — which
+  // in a desktop app looks broken (the entire sidebar, headers,
+  // labels, etc. all highlight). Native macOS apps only do
+  // select-all inside the current edit context.
+  //
+  // We allow the native default in real editable contexts (text
+  // inputs, textareas, contenteditable nodes, Monaco's editor) and
+  // inside the result grid (which installs its own onKeyDown to do
+  // a row select-all and stops propagation before we see the
+  // event). Everywhere else, we preventDefault so the browser's
+  // built-in "select all DOM text" doesn't fire.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== 'a') return;
+      const t = e.target as HTMLElement | null;
+      if (!t) return;
+      const tag = t.tagName?.toLowerCase();
+      // Genuine edit contexts get their native select-all.
+      if (tag === 'input' || tag === 'textarea' || t.isContentEditable) return;
+      // Monaco intercepts Cmd+A internally; if focus is in it, the
+      // browser event is what Monaco listens to — don't preventDefault.
+      if (t.closest('.monaco-editor')) return;
+      // The grid's wrapper stopped propagation already if it handled
+      // this; arriving here means we're outside the grid. Block the
+      // page-wide selection.
+      e.preventDefault();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
+
   // Sort: pinned connections first (most-recently-used among pinned at
   // the top), then unpinned by lastUsedAt, then anything else
   // alphabetically. Stable across renders because we sort a fresh copy

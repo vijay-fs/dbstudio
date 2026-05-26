@@ -162,7 +162,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(function Sq
       onChange={(next) => onChange(next ?? '')}
       theme={theme === 'dark' ? 'vs-dark' : 'vs'}
       options={{
-        fontSize: 13,
+        fontSize: 12,
         fontFamily: 'var(--font-mono), ui-monospace, monospace',
         minimap: { enabled: false },
         lineNumbers: 'on',
@@ -175,6 +175,13 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(function Sq
         quickSuggestions: { other: true, comments: false, strings: false },
         suggestOnTriggerCharacters: true,
         wordBasedSuggestions: 'off',
+        // Enter is always a newline. The previous default ('on')
+        // accepted the highlighted suggestion when the popup was
+        // visible — and the popup was visible most of the time —
+        // so pressing Enter to move down a line would silently
+        // insert a duplicate identifier instead. Tab accepts the
+        // suggestion; that's the unambiguous gesture.
+        // acceptSuggestionOnEnter: 'off',
       }}
       onMount={(ed, monaco) => {
         editorRef.current = ed;

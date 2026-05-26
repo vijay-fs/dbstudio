@@ -84,7 +84,16 @@ export function registerSqlCompletion(
   };
 
   const disposable = monaco.languages.registerCompletionItemProvider('sql', {
-    triggerCharacters: ['.', ' ', '\t', '\n', ',', '('],
+    // Only auto-pop suggestions on characters where the user is
+    // unambiguously asking for them: `.` (qualifying a column /
+    // schema-qualifying a table) and `(` (function-call args).
+    // Space, tab, newline, and comma used to be in here, and each
+    // one re-opened the popup after the user had finished a token.
+    // Pressing Enter then accepted the highlight, inserting a
+    // duplicate identifier — really annoying typing flow. The user
+    // can still ask for completions explicitly any time via
+    // Ctrl+Space.
+    triggerCharacters: ['.', '('],
 
     provideCompletionItems: (model, position) => {
       const lineUntil = model

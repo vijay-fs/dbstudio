@@ -676,7 +676,7 @@ function TabBar({
             <div
               key={tab.id}
               className={cn(
-                'group flex shrink-0 cursor-pointer items-center gap-1.5 border-r px-3 py-1.5 text-xs',
+                'group flex shrink-0 cursor-pointer items-center gap-1.5 border-r px-3 py-1.5 text-[11px]',
                 active
                   ? 'bg-background text-foreground'
                   : 'text-muted-foreground hover:bg-accent/40 hover:text-foreground',

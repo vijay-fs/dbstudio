@@ -11,15 +11,19 @@ import {
   type FilterChangedEvent,
   type GridApi,
   type ICellRendererParams,
+  type IHeaderParams,
 } from 'ag-grid-community';
 import {
   AlertCircle,
+  ArrowDown,
+  ArrowUp,
   ArrowUpRight,
   Braces,
   Check,
   ChevronDown,
   ChevronRight,
   Download,
+  Filter,
   FilterX,
   Loader2,
   Plus,
@@ -115,6 +119,79 @@ const dbstudioThemeDark = themeQuartz.withParams({
   rowHoverColor: 'rgba(96, 165, 250, 0.08)',
   selectedRowBackgroundColor: 'rgba(96, 165, 250, 0.16)',
 });
+
+/**
+ * Custom column header that puts the filter / menu icon on the LEFT of
+ * the title rather than AG Grid's default right-edge slot. The DOM the
+ * default header builds is awkward to override with pure CSS in v35 —
+ * the menu button is a sibling of the label container, not a flex
+ * child of it — so we replace the whole header instead.
+ *
+ * Layout: [filter icon] [title (click to sort)] [sort arrow if any]
+ *
+ * The filter icon brightens when a filter is active so the column
+ * stays scannable without the default's separate active-filter pip.
+ */
+function LeftIconHeader(props: IHeaderParams) {
+  const [sort, setSort] = useState<'asc' | 'desc' | null>(
+    (props.column.getSort() as 'asc' | 'desc' | null | undefined) ?? null,
+  );
+  const [filterActive, setFilterActive] = useState(props.column.isFilterActive());
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    const onSort = () =>
+      setSort((props.column.getSort() as 'asc' | 'desc' | null | undefined) ?? null);
+    const onFilter = () => setFilterActive(props.column.isFilterActive());
+    props.column.addEventListener('sortChanged', onSort);
+    props.column.addEventListener('filterChanged', onFilter);
+    return () => {
+      props.column.removeEventListener('sortChanged', onSort);
+      props.column.removeEventListener('filterChanged', onFilter);
+    };
+  }, [props.column]);
+
+  const onTitleClick = (e: React.MouseEvent) => {
+    if (!props.enableSorting) return;
+    props.progressSort(e.shiftKey);
+  };
+
+  return (
+    <div className="flex h-full w-full items-center gap-1.5">
+      <button
+        ref={buttonRef}
+        type="button"
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          e.stopPropagation();
+          if (buttonRef.current) props.showColumnMenu(buttonRef.current);
+        }}
+        className={cn(
+          'flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground',
+          filterActive && 'text-primary',
+        )}
+        title="Column menu"
+      >
+        <Filter className="h-3 w-3" />
+      </button>
+      <span
+        className={cn(
+          'flex-1 truncate text-left',
+          props.enableSorting && 'cursor-pointer select-none',
+        )}
+        onClick={onTitleClick}
+      >
+        {props.displayName}
+      </span>
+      {sort === 'asc' && (
+        <ArrowUp className="h-3 w-3 shrink-0 text-muted-foreground" />
+      )}
+      {sort === 'desc' && (
+        <ArrowDown className="h-3 w-3 shrink-0 text-muted-foreground" />
+      )}
+    </div>
+  );
+}
 
 export interface EditableConfig {
   profile: ConnectionProfile;
@@ -294,6 +371,43 @@ export function ResultTable({
     api.applyColumnState({ state: saved, applyOrder: true });
   }, [layoutStorageKey, loadLayout]);
 
+  /** Document-level Cmd/Ctrl+A handler. Fires whenever the cursor
+   *  is hovering the grid (`mouseInsideGridRef`) — no click-into-a-
+   *  cell prerequisite. Toggles: if everything is already selected,
+   *  press again clears the selection (matches Finder / Notes /
+   *  most native macOS apps). */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== 'a') return;
+      if (!mouseInsideGridRef.current) return;
+      // Inside an input or Monaco, don't hijack — let the native
+      // select-all run instead. Hovering the grid while typing in
+      // a filter input would otherwise lose that field's text.
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || t?.isContentEditable) {
+        return;
+      }
+      if (t?.closest('.monaco-editor')) return;
+      const api = gridApiRef.current;
+      if (!api) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const total = api.getDisplayedRowCount();
+      const selected = api.getSelectedNodes().length;
+      // "Everything selected" = full count or close to it; if even
+      // one row is missing from the selection we treat the press
+      // as "select all". The next identical press then clears.
+      if (selected >= total && total > 0) {
+        api.deselectAll();
+      } else {
+        api.selectAll();
+      }
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, []);
+
   /** Save the current column state. Debounced via rAF so a single
    *  resize drag (which fires onColumnResized many times) doesn't
    *  write to localStorage on every frame. */
@@ -350,9 +464,10 @@ export function ResultTable({
   const [insertError, setInsertError] = useState<string | null>(null);
   const [insertApplying, setInsertApplying] = useState(false);
 
-  const [deleteTarget, setDeleteTarget] = useState<Record<string, unknown> | null>(null);
-  const [deleteApplying, setDeleteApplying] = useState(false);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
+  // The single-row delete state (deleteTarget / applyDelete / its
+  // confirm dialog and the gutter trash icon) used to live here.
+  // Removed — the bulk-delete path operates on the current
+  // selection, which can be one row just as easily as many.
 
   /** Bulk-delete state. The user picks N rows via the grid's checkbox
    *  column, clicks "Delete N rows", reviews the generated DELETE
@@ -366,6 +481,42 @@ export function ResultTable({
   const [bulkDeleteError, setBulkDeleteError] = useState<string | null>(null);
 
   const [bulkInsertOpen, setBulkInsertOpen] = useState(false);
+
+  /** Anchor row for shift-extend / drag-extend row selection. The
+   *  anchor is where the user clicked/keydown'd first; subsequent
+   *  drag-over or Shift+Arrow extends the selection from anchor to
+   *  the current row. Cleared when the user clicks somewhere new
+   *  without Shift. Lives in a ref because the value is read
+   *  inside AG Grid event handlers that don't want to trigger
+   *  re-renders on every mouseover. */
+  const dragAnchorRef = useRef<number | null>(null);
+  const isDraggingRef = useRef(false);
+
+  /** Cmd/Ctrl+A activation gate. The keydown listener lives at
+   *  document level so the user doesn't need to click into a cell
+   *  first — hovering the grid is enough. The wrapper div's
+   *  mouseenter/mouseleave handlers flip this ref. */
+  const mouseInsideGridRef = useRef(false);
+  const gridContainerRef = useRef<HTMLDivElement | null>(null);
+
+  /** Set all rows whose `rowIndex` falls within `[min, max]` to
+   *  selected, and everything else to unselected. Used by both the
+   *  drag handler and the Shift+Arrow keyboard handler so they
+   *  produce identical results. Single-pass over the model — fast
+   *  even on the 10k-row cap. */
+  const selectRowRange = useCallback(
+    (api: GridApi, from: number, to: number) => {
+      const min = Math.min(from, to);
+      const max = Math.max(from, to);
+      api.forEachNode((node) => {
+        const idx = node.rowIndex;
+        if (idx == null) return;
+        const want = idx >= min && idx <= max;
+        if (node.isSelected() !== want) node.setSelected(want);
+      });
+    },
+    [],
+  );
 
   /** Right-click context menu state. `x`/`y` are page-relative pixel
    *  coords for absolute positioning. `rows` is what the menu's
@@ -591,46 +742,6 @@ export function ResultTable({
     }
   };
 
-  // ---- Delete flow ------------------------------------------------------
-  const openDelete = useCallback((rowObj: Record<string, unknown>) => {
-    setDeleteTarget(rowObj);
-    setDeleteError(null);
-  }, []);
-
-  const applyDelete = async () => {
-    if (!editable || !deleteTarget) return;
-    setDeleteError(null);
-    setDeleteApplying(true);
-    try {
-      const pk: Array<[string, unknown]> = editable.pkColumns.map((col) => [
-        col,
-        deleteTarget[col],
-      ]);
-      const request: RowDelete = {
-        schema: editable.schema,
-        table: editable.table,
-        pk,
-      };
-      const affected = await api.deleteRow(editable.profile, request);
-      if (affected !== 1) {
-        throw {
-          code: 'unexpected_rows',
-          message: `Expected 1 row affected, got ${affected}.`,
-        };
-      }
-      // Splice locally for snappy feedback. Parent's onChanged refetches.
-      gridApiRef.current?.applyTransaction({ remove: [deleteTarget] });
-      setDisplayedCount((c) => Math.max(0, c - 1));
-      setDeleteTarget(null);
-      editable.onChanged?.();
-    } catch (e: unknown) {
-      const err = e as { code?: string; message?: string };
-      setDeleteError(`${err.code ?? 'unknown'} · ${err.message ?? String(e)}`);
-    } finally {
-      setDeleteApplying(false);
-    }
-  };
-
   /** Loop the single-row delete endpoint for every selected row. Stops at
    *  the first failure (the rest stay selected so the user can see what
    *  succeeded vs what didn't). Successful rows are spliced from the grid
@@ -732,7 +843,15 @@ export function ResultTable({
       return {
         field: c.name,
         headerName: c.name,
-        type: numeric ? 'numericColumn' : undefined,
+        // Intentionally NOT setting `type: 'numericColumn'`. That
+        // preset bundles three things — agNumberColumnFilter,
+        // right-aligned cell content, AND right-aligned headers —
+        // and we only want the first two. Headers stay left-aligned
+        // uniformly across every column type for visual rhythm
+        // with the menu / filter icon, which AG Grid pins to the
+        // right edge of the header by default. Numeric cell content
+        // is right-aligned via cellClass below; the filter editor
+        // is still the number-aware one via the `filter` prop.
         filter: numeric ? 'agNumberColumnFilter' : 'agTextColumnFilter',
         floatingFilter: false,
         sortable: true,
@@ -761,8 +880,13 @@ export function ResultTable({
           return p.data?.[c.name];
         },
         valueFormatter: (p) => renderCell(p.value),
-        cellClass: (p) =>
-          isPk ? 'text-amber-700 dark:text-amber-400' : '',
+        // Everything left-aligned — headers and cells alike — for
+        // visual consistency across column types. The standard
+        // right-align-numerics convention is correct for accounting
+        // tables, but in a query-result browser users scan column-
+        // by-column and the left edge is the predictable anchor.
+        // PK columns still get the amber tint to call them out.
+        cellClass: () => (isPk ? 'text-amber-700 dark:text-amber-400' : ''),
         cellStyle: (p) => {
           if (!p.node?.id || !p.colDef.field) return null;
           const isPending = pendingEditsRef.current
@@ -776,30 +900,17 @@ export function ResultTable({
         minWidth: 100,
       };
     });
-    if (editable && editableReady) {
-      defs.push({
-        headerName: '',
-        colId: '__actions__',
-        width: 44,
-        minWidth: 44,
-        maxWidth: 44,
-        pinned: 'right',
-        sortable: false,
-        filter: false,
-        editable: false,
-        resizable: false,
-        suppressMovable: true,
-        cellRenderer: DeleteCellRenderer,
-        cellRendererParams: { onDelete: openDelete },
-      });
-    }
+    // The per-row delete column used to live here as a pinned-right
+    // action column with a trash icon. Removed — drag-select +
+    // Shift+Arrow + Cmd+A combined with the toolbar "Delete N rows"
+    // button cover the same UX without eating a column slot on
+    // every editable result.
     return defs;
   }, [
     result.columns,
     pkColumnNames,
     editable,
     editableReady,
-    openDelete,
     fkTargetsByColumn,
   ]);
 
@@ -810,6 +921,9 @@ export function ResultTable({
       filter: true,
       resizable: true,
       suppressMovable: false,
+      // Custom header puts the filter icon on the LEFT of the title.
+      // See LeftIconHeader above for why CSS alone wasn't enough.
+      headerComponent: LeftIconHeader,
     }),
     [],
   );
@@ -962,7 +1076,21 @@ export function ResultTable({
       {result.columns.length === 0 && totalCount === 0 ? (
         <p className="p-4 text-xs text-muted-foreground">No rows returned.</p>
       ) : (
-        <div className="relative flex-1 overflow-hidden">
+        <div
+          ref={gridContainerRef}
+          className="relative flex-1 overflow-hidden"
+          // Track whether the cursor is currently over the grid so
+          // the document-level Cmd+A handler (installed in an
+          // effect below) knows when to claim the keystroke. Using
+          // mouseenter/leave instead of focus means the user
+          // doesn't have to click into a cell first — just hover.
+          onMouseEnter={() => {
+            mouseInsideGridRef.current = true;
+          }}
+          onMouseLeave={() => {
+            mouseInsideGridRef.current = false;
+          }}
+        >
           {/* Floating apply card — only renders while there are pending
               edits. Bottom-right keeps it out of the user's primary work
               area but always reachable. */}
@@ -1025,21 +1153,116 @@ export function ResultTable({
             // editable result sets, otherwise there's nothing useful the
             // user can do with the selection. `headerCheckbox: true`
             // gives a "select all on this page" toggle.
-            rowSelection={
-              editable && editableReady
-                ? {
-                    mode: 'multiRow',
-                    checkboxes: true,
-                    headerCheckbox: true,
-                    enableClickSelection: false,
-                  }
-                : undefined
-            }
+            // Multi-row selection, no visual gutter affordances.
+            // The previous checkbox-column UI was redundant once we
+            // shipped drag-select + Shift+Arrow + Cmd+A — those
+            // gestures cover every case and the gutter ate
+            // horizontal space on every result. `checkboxes: false`
+            // hides the column; selection state itself stays on so
+            // the toolbar's "Delete N" + right-click copy menu both
+            // still work against the current selection.
+            rowSelection={{
+              mode: 'multiRow',
+              checkboxes: false,
+              headerCheckbox: false,
+              enableClickSelection: true,
+            }}
             onSelectionChanged={(e) => {
               const rows = e.api
                 .getSelectedRows()
                 .map((r) => r as Record<string, unknown>);
               setSelectedRows(rows);
+            }}
+            // ---- Drag-to-select rows --------------------------------
+            // AG Grid Community doesn't ship cell-range selection
+            // (Enterprise-only — that's what surfaced as the
+            // CellSelectionModule error earlier). We build the
+            // "drag the cursor down to select N rows" gesture by hand
+            // using the cell mouse events Community DOES expose. On
+            // mousedown we set an anchor row and start tracking; on
+            // mouseover (only while the button is held) we extend the
+            // selection to cover anchor..current. A document-level
+            // mouseup wraps the drag up — important because the user
+            // might release outside the grid area.
+            onCellMouseDown={(e) => {
+              if (!editable || !editableReady) return;
+              const evt = e.event as MouseEvent | undefined;
+              if (!evt || evt.button !== 0) return;
+              // Shift+click extends; plain click resets the anchor.
+              const shift = evt.shiftKey;
+              const idx = e.rowIndex;
+              if (idx == null) return;
+              if (shift && dragAnchorRef.current != null) {
+                selectRowRange(e.api, dragAnchorRef.current, idx);
+              } else {
+                dragAnchorRef.current = idx;
+              }
+              isDraggingRef.current = true;
+              const onUp = () => {
+                isDraggingRef.current = false;
+                document.removeEventListener('mouseup', onUp);
+              };
+              document.addEventListener('mouseup', onUp);
+            }}
+            onCellMouseOver={(e) => {
+              if (!isDraggingRef.current) return;
+              if (dragAnchorRef.current == null) return;
+              const idx = e.rowIndex;
+              if (idx == null) return;
+              selectRowRange(e.api, dragAnchorRef.current, idx);
+            }}
+            // ---- Shift+navigation keyboard extend -------------------
+            // AG Grid's built-in nav (Arrow / Home / End / PageUp /
+            // PageDown) only moves the focused cell; it doesn't
+            // extend the selection on its own in Community. We
+            // capture the keydown, compute the target row, and
+            // extend from the anchor to the new index. The default
+            // behaviour (focus move) still runs since we don't call
+            // preventDefault — AG Grid scrolls to follow the focus
+            // naturally.
+            onCellKeyDown={(e) => {
+              if (!editable || !editableReady) return;
+              const evt = e.event as KeyboardEvent | undefined;
+              if (!evt || !evt.shiftKey) return;
+              const total = e.api.getDisplayedRowCount();
+              const current = e.rowIndex;
+              if (current == null) return;
+              if (dragAnchorRef.current == null) dragAnchorRef.current = current;
+              let target = current;
+              switch (evt.key) {
+                case 'ArrowDown':
+                  target = Math.min(total - 1, current + 1);
+                  break;
+                case 'ArrowUp':
+                  target = Math.max(0, current - 1);
+                  break;
+                case 'Home':
+                  target = 0;
+                  break;
+                case 'End':
+                  target = total - 1;
+                  break;
+                case 'PageDown':
+                  target = Math.min(total - 1, current + 10);
+                  break;
+                case 'PageUp':
+                  target = Math.max(0, current - 10);
+                  break;
+                default:
+                  return;
+              }
+              evt.preventDefault();
+              selectRowRange(e.api, dragAnchorRef.current, target);
+              e.api.ensureIndexVisible(target);
+              // Move focus to the target row so subsequent Shift+
+              // Arrow presses keep extending from the new edge,
+              // matching every spreadsheet's behaviour. Use the
+              // `column` instance from the event (always present on
+              // cell events; full-width row events would lack
+              // `colDef`, hence the union type check this guards).
+              if ('column' in e && e.column) {
+                e.api.setFocusedCell(target, e.column.getColId());
+              }
             }}
             // Suppress AG Grid's own (Enterprise-only) context menu
             // bookkeeping so the native event reaches our handler
@@ -1222,51 +1445,9 @@ export function ResultTable({
         </DialogContent>
       </Dialog>
 
-      {/* Delete confirm dialog */}
-      <Dialog
-        open={deleteTarget != null}
-        onOpenChange={(o) => !o && !deleteApplying && setDeleteTarget(null)}
-      >
-        <DialogContent className="max-w-xl">
-          <DialogHeader>
-            <DialogTitle>Delete row?</DialogTitle>
-            <DialogDescription>
-              This DELETE runs against the live database and can&apos;t be undone.
-            </DialogDescription>
-          </DialogHeader>
-          {editable && deleteTarget && (
-            <div className="space-y-3">
-              <pre className="overflow-x-auto rounded border bg-muted/40 p-3 text-[11px] leading-relaxed">
-                {deletePreviewSql(editable, deleteTarget)}
-              </pre>
-              <div className="text-[11px]">
-                <Labeled label="Row">
-                  <code className="font-mono">
-                    {editable.pkColumns
-                      .map((col) => `${col}=${renderCell(deleteTarget[col])}`)
-                      .join(', ')}
-                  </code>
-                </Labeled>
-              </div>
-              {deleteError && <p className="text-xs text-destructive">{deleteError}</p>}
-            </div>
-          )}
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setDeleteTarget(null)}
-              disabled={deleteApplying}
-            >
-              Cancel
-            </Button>
-            <Button variant="destructive" onClick={applyDelete} disabled={deleteApplying}>
-              {deleteApplying ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-              <Trash2 className="h-3.5 w-3.5" />
-              Delete row
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* The single-row delete dialog was removed when the gutter
+          trash icon went away — the bulk-delete dialog handles
+          1-row selections identically. */}
 
       {/* JSON cell viewer — expandable tree view of the parsed value. */}
       <Dialog open={jsonView != null} onOpenChange={(o) => !o && setJsonView(null)}>
@@ -1804,25 +1985,6 @@ function JsonCellRenderer(
   );
 }
 
-// ---- Cell renderer for the trailing delete column -----------------------
-
-function DeleteCellRenderer(
-  params: ICellRendererParams & { onDelete: (data: Record<string, unknown>) => void },
-) {
-  if (!params.data) return null;
-  return (
-    <button
-      type="button"
-      onClick={() => params.onDelete(params.data as Record<string, unknown>)}
-      className="flex h-full w-full items-center justify-center text-muted-foreground hover:text-destructive"
-      title="Delete this row"
-      aria-label="Delete row"
-    >
-      <Trash2 className="h-3 w-3" />
-    </button>
-  );
-}
-
 // ---- Toolbar export menu -----------------------------------------------
 
 function ExportMenu({ onExport }: { onExport: (f: ExportFormat) => void }) {
@@ -1879,14 +2041,6 @@ function ExportMenuItem({
   );
 }
 
-function Labeled({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <div className="text-[9px] uppercase tracking-wider text-muted-foreground">{label}</div>
-      <div className="mt-0.5">{children}</div>
-    </div>
-  );
-}
 
 
 /** Type-aware value input for the Insert row dialog. Picks an HTML input

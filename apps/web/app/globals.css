@@ -67,6 +67,16 @@
 }
 
 @layer base {
+  /* Lock the root font-size so the whole UI scales predictably.
+     Without this, the WKWebView (Tauri on macOS) inherits whatever
+     the OS / accessibility settings decide — and Cmd+= zoom in the
+     running app persists across launches, which is how "everything
+     got bigger suddenly" happens with no code change. 16px is the
+     standard web baseline; every Tailwind text-* class derives from
+     it (text-xs = 12, text-sm = 14, etc.). */
+  html {
+    font-size: 16px;
+  }
   * {
     @apply border-border;
   }
@@ -109,6 +119,18 @@
   .scrollbar-thin::-webkit-scrollbar-corner {
     background: transparent;
   }
+}
+
+/* AG Grid: we render a custom column header (see LeftIconHeader in
+   ResultTable.tsx) that puts the filter / menu icon on the left of
+   the title. AG Grid still renders its own menu button + filter
+   pip at the right edge of every header cell — hide them so we
+   don't show two affordances side-by-side. */
+.ag-header-cell-menu-button,
+.ag-header-cell-filter-button,
+.ag-header-icon.ag-header-cell-menu-button,
+.ag-header-icon.ag-filter-active {
+  display: none !important;
 }
 
 /* React Flow theming overrides. The bundled CSS hard-codes a light
