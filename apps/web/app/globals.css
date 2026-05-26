@@ -133,6 +133,59 @@
   display: none !important;
 }
 
+/* Column menu / filter popup. AG Grid renders these as descendants
+   of `.ag-popup` appended at the document root; the bundled theme
+   leaves the background unset, so result rows bleed through. Pin
+   the popup chrome to solid theme tokens (light + dark) plus a
+   border + shadow so it reads as a floating panel, not an overlay
+   smear on top of the grid. We target the popup root rather than
+   `.ag-menu` alone because the new Theming API in v35 uses
+   `.ag-tabs` / `.ag-filter-wrapper` for sub-panels too. */
+.ag-popup,
+.ag-popup-child,
+.ag-menu,
+.ag-filter,
+.ag-filter-wrapper,
+.ag-set-filter,
+.ag-tabs,
+.ag-tabs-body,
+.ag-tabs-header,
+.ag-menu-list,
+.ag-mini-filter,
+.ag-virtual-list-viewport {
+  background-color: hsl(var(--popover)) !important;
+  color: hsl(var(--popover-foreground)) !important;
+}
+.ag-popup-child,
+.ag-menu,
+.ag-filter,
+.ag-tabs {
+  border: 1px solid hsl(var(--border)) !important;
+  border-radius: var(--radius) !important;
+  box-shadow: 0 8px 24px hsl(0 0% 0% / 0.18) !important;
+}
+.ag-tabs-header {
+  border-bottom: 1px solid hsl(var(--border)) !important;
+}
+/* Inputs inside the filter (text box, number range) inherit the
+   transparent background otherwise — give them the same surface as
+   the rest of our form controls so they read as inputs, not labels. */
+.ag-popup input[type='text'],
+.ag-popup input[type='number'],
+.ag-popup input[type='date'],
+.ag-popup .ag-input-field-input,
+.ag-popup .ag-text-field-input {
+  background-color: hsl(var(--background)) !important;
+  color: hsl(var(--foreground)) !important;
+  border: 1px solid hsl(var(--input)) !important;
+}
+.ag-popup .ag-list-item:hover,
+.ag-popup .ag-menu-option:hover,
+.ag-popup .ag-tab:hover {
+  background-color: hsl(var(--accent)) !important;
+  color: hsl(var(--accent-foreground)) !important;
+}
+
 /* React Flow theming overrides. The bundled CSS hard-codes a light
    palette for the controls toolbar (zoom/fit/relayout buttons) and
    the minimap — buttons get a white background and dark-grey SVG

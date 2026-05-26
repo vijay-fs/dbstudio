@@ -81,3 +81,59 @@ export function buildRenameColumn(
     style,
   )} TO ${softQuoteIdent(newName, style)};`;
 }
+
+export interface AlterColumnSpec {
+  /** The current name; the column we're targeting (pre-rename). */
+  oldName: string;
+  /** The desired final type, exactly as it should appear in DDL. */
+  dataType: string;
+  /** Used by MySQL/MariaDB's MODIFY COLUMN, which restates every
+   *  column attribute and silently drops anything you omit. We need
+   *  these to preserve the existing nullable / default. PG and SQLite
+   *  ignore them. */
+  nullable: boolean;
+  /** Default expression as the user would type it after `DEFAULT`.
+   *  null/empty means "no DEFAULT clause" — for MySQL this also drops
+   *  any existing default, since MODIFY COLUMN restates everything. */
+  default?: string | null;
+}
+
+/** Change a column's data type. Engine-specific because:
+ *  - Postgres / CockroachDB use `ALTER COLUMN <col> TYPE <newtype>`,
+ *    and the implicit USING cast covers numeric/text widenings.
+ *  - MySQL / MariaDB use `MODIFY COLUMN <col> <full new defn>` and
+ *    silently drop any column attributes you don't restate, so we
+ *    have to re-emit nullable + default explicitly.
+ *  - SQLite has no in-place ALTER COLUMN TYPE; the documented path is
+ *    rebuild-the-table, which is too invasive for this dialog. We
+ *    throw with a clear message so the caller can show it instead of
+ *    silently emitting wrong SQL.
+ */
+export function buildAlterColumnType(
+  engine: DatabaseEngine,
+  schema: string,
+  table: string,
+  spec: AlterColumnSpec,
+): string {
+  const style = quoteStyleForEngine(engine);
+  const colId = softQuoteIdent(spec.oldName, style);
+  const ref = tableRef(engine, schema, table);
+  if (engine === 'sqlite') {
+    throw new Error(
+      'SQLite does not support changing a column\'s type in place. Recreate the table to change the type.',
+    );
+  }
+  if (engine === 'mysql' || engine === 'mariadb') {
+    const parts: string[] = [`ALTER TABLE ${ref} MODIFY COLUMN ${colId}`, spec.dataType];
+    if (!spec.nullable) parts.push('NOT NULL');
+    if (spec.default && spec.default.trim()) {
+      parts.push(`DEFAULT ${spec.default.trim()}`);
+    }
+    return parts.join(' ') + ';';
+  }
+  // Postgres + CockroachDB. We don't emit a USING clause — engines
+  // accept the implicit cast for the common type widenings; for
+  // anything cross-family the engine error message is more useful
+  // than a guessed USING expression.
+  return `ALTER TABLE ${ref} ALTER COLUMN ${colId} TYPE ${spec.dataType};`;
+}

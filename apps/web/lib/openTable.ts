@@ -16,30 +16,33 @@ import type { Route } from 'next';
 
 import type { ConnectionProfile } from './types';
 import { softQuoteIdent, quoteStyleForEngine } from './sqlIdent';
+import type { RowLimit } from '@/store/gridPrefs';
 
-const DEFAULT_ROW_LIMIT = 1000;
+const DEFAULT_ROW_LIMIT: RowLimit = 10;
 
-/** Engine-aware `SELECT * FROM <table> LIMIT N`. Emits bare identifiers
+/** Engine-aware `SELECT * FROM <table> [LIMIT N]`. Emits bare identifiers
  *  when both the schema and the table names are lowercase, alphanumeric,
  *  and not reserved — so the generated SQL reads like SQL a person would
- *  write. Quotes only the identifiers that need it. */
+ *  write. Quotes only the identifiers that need it. Passing `null` for
+ *  `limit` skips the LIMIT clause entirely (the "All" option). */
 export function buildSelectStarSql(
   engine: ConnectionProfile['engine'],
   schema: string,
   table: string,
-  limit: number = DEFAULT_ROW_LIMIT,
+  limit: RowLimit = DEFAULT_ROW_LIMIT,
 ): string {
   const style = quoteStyleForEngine(engine);
   const t = softQuoteIdent(table, style);
+  const limitClause = limit == null ? '' : ` LIMIT ${limit}`;
   // SQLite has no real schemas (every table lives in `main`); for MySQL we
   // omit the schema qualifier when it matches the connection's active
   // database in caller-side code, but here we always emit what we're
   // given. The caller passes '' to mean "no qualifier".
   if (engine === 'sqlite' || !schema) {
-    return `SELECT * FROM ${t} LIMIT ${limit};`;
+    return `SELECT * FROM ${t}${limitClause};`;
   }
   const s = softQuoteIdent(schema, style);
-  return `SELECT * FROM ${s}.${t} LIMIT ${limit};`;
+  return `SELECT * FROM ${s}.${t}${limitClause};`;
 }
 
 /** `SELECT * FROM <table> WHERE <column> = <literal> LIMIT N` — used by
@@ -57,7 +60,7 @@ export function buildFilteredSelectSql(
   table: string,
   column: string,
   value: unknown,
-  limit: number = DEFAULT_ROW_LIMIT,
+  limit: RowLimit = DEFAULT_ROW_LIMIT,
 ): string {
   const style = quoteStyleForEngine(engine);
   const t = softQuoteIdent(table, style);
@@ -66,7 +69,8 @@ export function buildFilteredSelectSql(
     engine === 'sqlite' || !schema
       ? t
       : `${softQuoteIdent(schema, style)}.${t}`;
-  return `SELECT * FROM ${tableRef} WHERE ${c} = ${sqlLiteral(value)} LIMIT ${limit};`;
+  const limitClause = limit == null ? '' : ` LIMIT ${limit}`;
+  return `SELECT * FROM ${tableRef} WHERE ${c} = ${sqlLiteral(value)}${limitClause};`;
 }
 
 /** Render a JS value as a SQL literal for inlining into a WHERE clause.
@@ -84,33 +88,52 @@ function sqlLiteral(value: unknown): string {
 
 /** Open the table in the connection's SQL workspace. Builds the SELECT,
  *  hands it to the workspace via the shared palette-load channel, and
- *  navigates (no-op if already on /sql). */
+ *  navigates (no-op if already on /sql). The workspace honors the
+ *  `tableRef` on the event so a tab dedicated to this table is reused
+ *  rather than a new tab created on every click. */
 export function openTableInSql(
   router: { push: (href: Route) => void },
   profile: ConnectionProfile,
   schemaName: string,
   tableName: string,
+  limit: RowLimit = DEFAULT_ROW_LIMIT,
 ): void {
-  const sql = buildSelectStarSql(profile.engine, schemaName, tableName);
-  loadSqlInWorkspace(router, profile, sql, true);
+  const sql = buildSelectStarSql(profile.engine, schemaName, tableName, limit);
+  loadSqlInWorkspace(router, profile, sql, true, {
+    schema: schemaName,
+    table: tableName,
+  });
 }
 
 /** Generic "open arbitrary SQL in the connection's SQL workspace" helper.
  *  Same transport as `openTableInSql` — sessionStorage covers the
  *  navigation race, the custom event covers the already-mounted case.
- *  Used by History / Snippets pages when the user clicks Load or Re-run. */
+ *  Used by History / Snippets pages when the user clicks Load or Re-run.
+ *  Pass `tableRef` to mark the tab as bound to a specific table so a
+ *  re-open of the same table re-focuses rather than spawns a tab. */
 export function loadSqlInWorkspace(
   router: { push: (href: Route) => void },
   profile: ConnectionProfile,
   sql: string,
   autoRun: boolean,
+  tableRef?: { schema: string; table: string },
 ): void {
   sessionStorage.setItem('dbstudio.pendingSql', sql);
   sessionStorage.setItem('dbstudio.pendingSqlAutoRun', autoRun ? '1' : '0');
+  if (tableRef) {
+    sessionStorage.setItem(
+      'dbstudio.pendingSqlTableRef',
+      JSON.stringify(tableRef),
+    );
+  } else {
+    sessionStorage.removeItem('dbstudio.pendingSqlTableRef');
+  }
   router.push(`/sql?cid=${profile.id}` as Route);
   setTimeout(() => {
     window.dispatchEvent(
-      new CustomEvent('palette-load-sql', { detail: { sql, autoRun } }),
+      new CustomEvent('palette-load-sql', {
+        detail: { sql, autoRun, tableRef },
+      }),
     );
   }, 50);
 }

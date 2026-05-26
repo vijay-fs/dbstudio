@@ -5,6 +5,11 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
+export interface TableRef {
+  schema: string;
+  table: string;
+}
+
 export interface SqlTab {
   id: string;
   title: string;
@@ -15,6 +20,13 @@ export interface SqlTab {
    *  the dirty-tab indicator: if the live buffer differs from this we
    *  know the user has typed changes that haven't been executed yet. */
   lastRunSql?: string;
+  /** When present, this tab is bound to a specific table — opened from
+   *  the sidebar / ER diagram / palette as a "browse this table" tab.
+   *  Clicking the same table again re-focuses this tab and refreshes
+   *  its SQL with the current row-limit, instead of creating a new
+   *  tab every time. The marker is sticky; editing the buffer doesn't
+   *  clear it (the user can still type freely and re-run). */
+  tableRef?: TableRef;
 }
 
 interface PerConnection {
@@ -37,15 +49,31 @@ interface SqlTabsState {
    *  "load recent query" flow so it lands in a dedicated tab instead of
    *  trampling whatever the user had open. */
   loadIntoNewTab: (connectionId: string, sql: string) => SqlTab;
+  /** Open (or re-focus) a tab bound to a specific table. If a tab with
+   *  matching `tableRef` already exists, refreshes its SQL with the new
+   *  buffer and activates it. Otherwise creates a new table-bound tab.
+   *  Returns the tab plus an `isNew` flag so callers can decide
+   *  whether to auto-run the SELECT — re-clicking an open table tab
+   *  should be a pure focus, not another query execution. */
+  openOrFocusTableTab: (
+    connectionId: string,
+    sql: string,
+    ref: TableRef,
+  ) => { tab: SqlTab; isNew: boolean };
 }
 
-function defaultTab(sql: string): SqlTab {
+function defaultTab(sql: string, tableRef?: TableRef): SqlTab {
   return {
     id: crypto.randomUUID(),
-    title: deriveTitle(sql),
+    title: tableRef ? formatTableTitle(tableRef) : deriveTitle(sql),
     sql,
     createdAt: Date.now(),
+    tableRef,
   };
+}
+
+function formatTableTitle(ref: TableRef): string {
+  return ref.schema ? `${ref.schema}.${ref.table}` : ref.table;
 }
 
 export function deriveTitle(sql: string): string {
@@ -183,6 +211,49 @@ export const useSqlTabs = create<SqlTabsState>()(
           };
         });
         return tab;
+      },
+
+      openOrFocusTableTab: (connectionId, sql, ref) => {
+        const slot = get().byConnection[connectionId];
+        const existing = slot?.tabs.find(
+          (t) =>
+            t.tableRef &&
+            t.tableRef.schema === ref.schema &&
+            t.tableRef.table === ref.table,
+        );
+        if (existing) {
+          // Re-focus the existing table tab. We intentionally do NOT
+          // overwrite the buffer or the title — re-clicking an open
+          // table tab should be a pure focus, not a destructive
+          // refresh. If the user wants a different limit applied,
+          // they can change the limit selector and click Run; the
+          // currently visible result stays in place until then.
+          set((s) => {
+            const cur = s.byConnection[connectionId];
+            if (!cur) return s;
+            return {
+              byConnection: {
+                ...s.byConnection,
+                [connectionId]: { ...cur, activeId: existing.id },
+              },
+            };
+          });
+          return { tab: existing, isNew: false };
+        }
+        const tab = defaultTab(sql, ref);
+        set((s) => {
+          const cur = s.byConnection[connectionId] ?? { tabs: [], activeId: null };
+          return {
+            byConnection: {
+              ...s.byConnection,
+              [connectionId]: {
+                tabs: [...cur.tabs, tab],
+                activeId: tab.id,
+              },
+            },
+          };
+        });
+        return { tab, isNew: true };
       },
     }),
     { name: 'dbstudio.sqlTabs' },

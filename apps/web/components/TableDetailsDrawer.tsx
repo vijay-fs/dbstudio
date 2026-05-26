@@ -110,14 +110,19 @@ export function TableDetailsDrawer({
                   onAdd={() =>
                     setDdl({ kind: 'add', schema: table.schema, table: table.name })
                   }
-                  onRename={(col) =>
+                  onEdit={(colName) => {
+                    const col = table.columns.find((c) => c.name === colName);
+                    if (!col) return;
                     setDdl({
-                      kind: 'rename',
+                      kind: 'edit',
                       schema: table.schema,
                       table: table.name,
-                      column: col,
-                    })
-                  }
+                      column: col.name,
+                      currentType: col.data_type,
+                      nullable: col.nullable,
+                      default: col.default ?? null,
+                    });
+                  }}
                   onDrop={(col) =>
                     setDdl({
                       kind: 'drop',
@@ -187,13 +192,13 @@ function Columns({
   table,
   editable,
   onAdd,
-  onRename,
+  onEdit,
   onDrop,
 }: {
   table: Table;
   editable: boolean;
   onAdd: () => void;
-  onRename: (column: string) => void;
+  onEdit: (column: string) => void;
   onDrop: (column: string) => void;
 }) {
   const pkSet = new Set(table.primary_key?.columns ?? []);
@@ -253,10 +258,10 @@ function Columns({
                 <span className="ml-1 flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
                   <button
                     type="button"
-                    onClick={() => onRename(col.name)}
+                    onClick={() => onEdit(col.name)}
                     className="rounded p-0.5 text-muted-foreground hover:bg-background hover:text-foreground"
-                    title="Rename column"
-                    aria-label={`Rename ${col.name}`}
+                    title="Edit column (name, type, nullable, default)"
+                    aria-label={`Edit ${col.name}`}
                   >
                     <Pencil className="h-3 w-3" />
                   </button>

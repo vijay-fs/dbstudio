@@ -38,6 +38,7 @@ import { useQueryHistory } from '@/store/queryHistory';
 import { useSchemaCache } from '@/store/schemaCache';
 import { useSqlTabs } from '@/store/sqlTabs';
 import { useSnippets } from '@/store/snippets';
+import { useGridPrefs, ROW_LIMIT_OPTIONS } from '@/store/gridPrefs';
 import { api } from '@/lib/api';
 import { ENGINE_LABELS, type QueryResult } from '@/lib/types';
 import type { Schema } from '@dbstudio/erd';
@@ -103,6 +104,7 @@ function SqlPageInner() {
   const setActive = useSqlTabs((s) => s.setActive);
   const setSql = useSqlTabs((s) => s.setSql);
   const loadIntoNewTab = useSqlTabs((s) => s.loadIntoNewTab);
+  const openOrFocusTableTab = useSqlTabs((s) => s.openOrFocusTableTab);
   const markRan = useSqlTabs((s) => s.markRan);
 
   // Run state lives in-memory keyed by tab id so each tab keeps its own
@@ -143,23 +145,56 @@ function SqlPageInner() {
   // the event fires), we drain it on mount.
   useEffect(() => {
     if (!profile) return;
-    const open = (sql: string, autoRun: boolean) => {
-      loadIntoNewTab(profile.id, sql);
+    const open = (
+      sql: string,
+      autoRun: boolean,
+      tableRef?: { schema: string; table: string },
+    ) => {
+      // Table-bound opens re-focus an existing tab for the same
+      // table; query opens still get a fresh tab so prior buffers
+      // stay intact. The store reports `isNew=false` when an open
+      // tab was just re-focused; in that case we skip the auto-run
+      // and let the existing result stay in place — re-clicking an
+      // open table tab should feel like pure navigation, not a
+      // requery.
+      let shouldRun = autoRun;
+      if (tableRef) {
+        const { isNew } = openOrFocusTableTab(profile.id, sql, tableRef);
+        if (!isNew) shouldRun = false;
+      } else {
+        loadIntoNewTab(profile.id, sql);
+      }
       setBottomTab('results');
-      if (autoRun) setTimeout(() => void onRun(sql), 0);
+      if (shouldRun) setTimeout(() => void onRun(sql), 0);
     };
     const onPaletteLoad = (e: Event) => {
-      const detail = (e as CustomEvent<{ sql: string; autoRun?: boolean }>).detail;
-      if (detail?.sql) open(detail.sql, Boolean(detail.autoRun));
+      const detail = (
+        e as CustomEvent<{
+          sql: string;
+          autoRun?: boolean;
+          tableRef?: { schema: string; table: string };
+        }>
+      ).detail;
+      if (detail?.sql) open(detail.sql, Boolean(detail.autoRun), detail.tableRef);
     };
     window.addEventListener('palette-load-sql', onPaletteLoad as EventListener);
     const pending = sessionStorage.getItem('dbstudio.pendingSql');
     if (pending) {
       const autoRun = sessionStorage.getItem('dbstudio.pendingSqlAutoRun') === '1';
+      const refRaw = sessionStorage.getItem('dbstudio.pendingSqlTableRef');
+      let ref: { schema: string; table: string } | undefined;
+      if (refRaw) {
+        try {
+          ref = JSON.parse(refRaw);
+        } catch {
+          // ignore malformed marker
+        }
+      }
       sessionStorage.removeItem('dbstudio.pendingSql');
       sessionStorage.removeItem('dbstudio.pendingSqlEntry');
       sessionStorage.removeItem('dbstudio.pendingSqlAutoRun');
-      open(pending, autoRun);
+      sessionStorage.removeItem('dbstudio.pendingSqlTableRef');
+      open(pending, autoRun, ref);
     }
     return () =>
       window.removeEventListener('palette-load-sql', onPaletteLoad as EventListener);
@@ -405,6 +440,7 @@ function SqlPageInner() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <RowLimitSelect />
             <Button
               size="sm"
               variant="outline"
@@ -653,7 +689,13 @@ function TabBar({
   onClose,
   onNew,
 }: {
-  tabs: { id: string; title: string; sql: string; lastRunSql?: string }[];
+  tabs: {
+    id: string;
+    title: string;
+    sql: string;
+    lastRunSql?: string;
+    tableRef?: { schema: string; table: string };
+  }[];
   activeId: string | null;
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
@@ -672,14 +714,30 @@ function TabBar({
           const dirty =
             trimmedSql.length > 0 &&
             (tab.lastRunSql == null || tab.lastRunSql.trim() !== trimmedSql);
+          const isTable = Boolean(tab.tableRef);
           return (
             <div
               key={tab.id}
               className={cn(
                 'group flex shrink-0 cursor-pointer items-center gap-1.5 border-r px-3 py-1.5 text-[11px]',
-                active
-                  ? 'bg-background text-foreground'
-                  : 'text-muted-foreground hover:bg-accent/40 hover:text-foreground',
+                // Table tabs are visually a different *kind* of tab —
+                // they're tied to a single underlying table and the
+                // SELECT in the buffer is generated, not authored.
+                // Use a distinct accent surface (sky tint), monospace
+                // title, and a prominent leading badge so the user
+                // can tell at a glance which kind of tab they have
+                // focused without inspecting the SQL.
+                isTable && [
+                  'border-l-2 border-l-sky-500',
+                  active
+                    ? 'bg-sky-50 text-foreground dark:bg-sky-950/40'
+                    : 'bg-sky-50/40 text-muted-foreground hover:bg-sky-100 dark:bg-sky-950/20 dark:hover:bg-sky-900/40',
+                ],
+                !isTable && [
+                  active
+                    ? 'bg-background text-foreground'
+                    : 'text-muted-foreground hover:bg-accent/40 hover:text-foreground',
+                ],
               )}
               onClick={() => onSelect(tab.id)}
               onAuxClick={(e) => {
@@ -691,16 +749,33 @@ function TabBar({
               }}
               title={
                 `${tab.title}\nCmd+${i + 1} to switch` +
+                (isTable ? '\nTable browse tab' : '') +
                 (dirty ? '\nUnrun changes in this tab' : '')
               }
             >
+              {isTable ? (
+                <span
+                  className="inline-flex shrink-0 items-center gap-1 rounded bg-sky-500/15 px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-sky-700 dark:text-sky-300"
+                  aria-label="Table browse tab"
+                >
+                  <Table2 className="h-2.5 w-2.5" />
+                  TABLE
+                </span>
+              ) : null}
               {dirty && (
                 <span
                   className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500"
                   aria-label="Tab has unrun changes"
                 />
               )}
-              <span className="max-w-[180px] truncate">{tab.title || 'Untitled'}</span>
+              <span
+                className={cn(
+                  'max-w-[180px] truncate',
+                  isTable && 'font-mono',
+                )}
+              >
+                {tab.title || 'Untitled'}
+              </span>
               <button
                 type="button"
                 onClick={(e) => {
@@ -729,6 +804,41 @@ function TabBar({
         <Plus className="h-3.5 w-3.5" />
       </button>
     </div>
+  );
+}
+
+/**
+ * Top-toolbar selector that controls the default LIMIT applied when
+ * the user opens a table by clicking it (sidebar, ER diagram, FK
+ * jump). Persisted globally via gridPrefs so the choice survives
+ * across connections and reloads. `null` is the "All" option — no
+ * LIMIT clause is emitted at all.
+ */
+function RowLimitSelect() {
+  const rowLimit = useGridPrefs((s) => s.rowLimit);
+  const setRowLimit = useGridPrefs((s) => s.setRowLimit);
+  const current = rowLimit == null ? 'all' : String(rowLimit);
+  return (
+    <label
+      className="flex items-center gap-1 text-[11px] text-muted-foreground"
+      title="Default row limit when opening a table from the sidebar"
+    >
+      <span>Limit</span>
+      <select
+        value={current}
+        onChange={(e) => {
+          const v = e.target.value;
+          setRowLimit(v === 'all' ? null : Number(v));
+        }}
+        className="h-7 rounded border border-input bg-background px-1.5 text-[11px] text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+      >
+        {ROW_LIMIT_OPTIONS.map((opt) => (
+          <option key={String(opt.value)} value={opt.value == null ? 'all' : String(opt.value)}>
+            {opt.label}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 

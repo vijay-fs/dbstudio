@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import type { Route } from 'next';
@@ -22,12 +22,25 @@ import {
   Pin,
   PinOff,
   GitCompare,
+  Copy,
+  FileCode,
+  Info,
+  AlertTriangle,
+  Wrench,
 } from 'lucide-react';
 
 import { useConnections } from '@/store/connections';
 import { useSchemaCache } from '@/store/schemaCache';
+import { useGridPrefs } from '@/store/gridPrefs';
 import { ENGINE_LABELS, type ConnectionProfile } from '@/lib/types';
-import { openTableInSql } from '@/lib/openTable';
+import { openTableInSql, buildSelectStarSql } from '@/lib/openTable';
+import {
+  buildCreateTableDdl,
+  buildTruncateSql,
+  buildDropTableSql,
+} from '@/lib/createTableDdl';
+import { api } from '@/lib/api';
+import { TableDetailsDrawer } from '@/components/TableDetailsDrawer';
 import { cn } from '@/lib/utils';
 import { readTheme, setTheme, type Theme } from '@/lib/theme';
 import { Button } from '@/components/ui/button';
@@ -520,6 +533,141 @@ function TableNav({
   // line that's easy to scroll past when working with many connections.
   const [outerCollapsed, setOuterCollapsed] = useState(false);
 
+  // Right-click context menu state. `pos` is the menu's top-left in
+  // viewport coordinates (we use position:fixed so it floats above
+  // the sidebar without affecting layout). `tableRef` identifies the
+  // row the user right-clicked on; all menu actions act on it.
+  const rowLimit = useGridPrefs((s) => s.rowLimit);
+  const reloadSchema = useSchemaCache((s) => s.load);
+  const [menu, setMenu] = useState<
+    { x: number; y: number; schema: string; name: string } | null
+  >(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const [detailsTarget, setDetailsTarget] =
+    useState<{ schema: string; table: string } | null>(null);
+  const [destructive, setDestructive] = useState<
+    | { kind: 'truncate' | 'drop'; schema: string; name: string; sql: string }
+    | null
+  >(null);
+  const [destructiveBusy, setDestructiveBusy] = useState(false);
+  const [destructiveError, setDestructiveError] = useState<string | null>(null);
+
+  // Dismiss the context menu on any outside click / Escape. We attach
+  // to `document` because the menu can outlive the sidebar element it
+  // was anchored to (e.g. user scrolls the sidebar). React's
+  // `e.stopPropagation()` on the menu can't block a native document
+  // listener, so we filter via ref containment instead — only close
+  // when the click target is genuinely outside the menu DOM.
+  useEffect(() => {
+    if (!menu) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (menuRef.current && menuRef.current.contains(e.target as Node)) return;
+      setMenu(null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenu(null);
+    };
+    document.addEventListener('mousedown', onMouseDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [menu]);
+
+  const findTable = (schemaName: string, tableName: string) => {
+    if (!schema) return null;
+    const ns = schema.schemas.find((s) => s.name === schemaName);
+    return ns?.tables.find((t) => t.name === tableName) ?? null;
+  };
+
+  const copy = (text: string) => {
+    void navigator.clipboard.writeText(text).catch(() => {});
+  };
+
+  const handleMenuAction = async (
+    action:
+      | 'open'
+      | 'describe'
+      | 'copy-select'
+      | 'copy-create'
+      | 'copy-name'
+      | 'alter'
+      | 'truncate'
+      | 'drop',
+    schemaName: string,
+    tableName: string,
+  ) => {
+    setMenu(null);
+    if (action === 'open') {
+      openTableInSql(router, profile, schemaName, tableName, rowLimit);
+      return;
+    }
+    if (action === 'describe') {
+      setDetailsTarget({ schema: schemaName, table: tableName });
+      return;
+    }
+    if (action === 'copy-select') {
+      copy(buildSelectStarSql(profile.engine, schemaName, tableName, rowLimit));
+      return;
+    }
+    if (action === 'copy-name') {
+      const qualified =
+        profile.engine === 'sqlite' || !schemaName
+          ? tableName
+          : `${schemaName}.${tableName}`;
+      copy(qualified);
+      return;
+    }
+    if (action === 'copy-create') {
+      const t = findTable(schemaName, tableName);
+      if (t) copy(buildCreateTableDdl(profile.engine, t));
+      return;
+    }
+    if (action === 'alter') {
+      // The Table Details drawer is the natural surface for ALTER
+      // operations — it exposes Add Column / Edit / Drop per-column
+      // already, plus full schema introspection for context.
+      setDetailsTarget({ schema: schemaName, table: tableName });
+      return;
+    }
+    if (action === 'truncate' || action === 'drop') {
+      const t = findTable(schemaName, tableName);
+      if (!t) return;
+      const sql =
+        action === 'truncate'
+          ? buildTruncateSql(profile.engine, t)
+          : buildDropTableSql(profile.engine, t);
+      setDestructiveError(null);
+      setDestructive({ kind: action, schema: schemaName, name: tableName, sql });
+      return;
+    }
+  };
+
+  const runDestructive = async () => {
+    if (!destructive) return;
+    setDestructiveBusy(true);
+    setDestructiveError(null);
+    try {
+      await api.runQuery(profile, {
+        sql: destructive.sql,
+        query_id: crypto.randomUUID(),
+      });
+      // DROP TABLE removes the table from the catalog (and any
+      // sidebar entry needs to disappear). TRUNCATE doesn't change
+      // the schema shape, but the row-count surfacing elsewhere
+      // might be stale; cheaper to refetch unconditionally. Force
+      // because the cache otherwise hands back the pre-op entry.
+      await reloadSchema(profile, true).catch(() => {});
+      setDestructive(null);
+    } catch (e) {
+      const err = e as { code?: string; message?: string };
+      setDestructiveError(err.message ?? err.code ?? 'failed');
+    } finally {
+      setDestructiveBusy(false);
+    }
+  };
+
   if (loadError && !schema) {
     return (
       <div className="px-2 py-1 text-[10px] text-muted-foreground">
@@ -581,12 +729,26 @@ function TableNav({
                 <li key={`${t.schemaName}.${t.name}`}>
                   <button
                     type="button"
-                    onClick={() => openTableInSql(router, profile, t.schemaName, t.name)}
+                    onClick={() =>
+                      handleMenuAction('open', t.schemaName, t.name)
+                    }
+                    onDoubleClick={() =>
+                      handleMenuAction('open', t.schemaName, t.name)
+                    }
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setMenu({
+                        x: e.clientX,
+                        y: e.clientY,
+                        schema: t.schemaName,
+                        name: t.name,
+                      });
+                    }}
                     className={cn(
                       'flex w-full items-center gap-1.5 rounded px-1.5 py-0.5 text-left text-[11px]',
                       'text-muted-foreground hover:bg-accent/30 hover:text-foreground',
                     )}
-                    title={`Open ${t.schemaName}.${t.name} in a new query tab`}
+                    title={`Open ${t.schemaName}.${t.name} — right-click for more`}
                   >
                     <Table2 className="h-3 w-3 shrink-0 opacity-70" />
                     <span className="truncate">
@@ -604,6 +766,235 @@ function TableNav({
           </ul>
         </>
       )}
+
+      {/* Right-click context menu. Rendered as a position:fixed
+          panel so it floats above the sidebar / pages without
+          shifting layout. Dismissed on outside-click + Escape via
+          the effect above. */}
+      {menu && (
+        <div
+          ref={menuRef}
+          role="menu"
+          style={{ top: menu.y, left: menu.x }}
+          className="fixed z-50 min-w-[200px] rounded-md border bg-popover py-1 text-popover-foreground shadow-md"
+        >
+          <ContextMenuItem
+            icon={<Table2 className="h-3 w-3" />}
+            label="Open"
+            onSelect={() => handleMenuAction('open', menu.schema, menu.name)}
+          />
+          <ContextMenuItem
+            icon={<Info className="h-3 w-3" />}
+            label="Describe"
+            onSelect={() => handleMenuAction('describe', menu.schema, menu.name)}
+          />
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            icon={<Copy className="h-3 w-3" />}
+            label="Copy SELECT *"
+            onSelect={() => handleMenuAction('copy-select', menu.schema, menu.name)}
+          />
+          <ContextMenuItem
+            icon={<FileCode className="h-3 w-3" />}
+            label="Copy CREATE TABLE"
+            onSelect={() => handleMenuAction('copy-create', menu.schema, menu.name)}
+          />
+          <ContextMenuItem
+            icon={<Copy className="h-3 w-3" />}
+            label="Copy qualified name"
+            onSelect={() => handleMenuAction('copy-name', menu.schema, menu.name)}
+          />
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            icon={<Wrench className="h-3 w-3" />}
+            label="Alter table…"
+            onSelect={() => handleMenuAction('alter', menu.schema, menu.name)}
+          />
+          <ContextMenuItem
+            icon={<AlertTriangle className="h-3 w-3" />}
+            label="Truncate…"
+            destructive
+            onSelect={() => handleMenuAction('truncate', menu.schema, menu.name)}
+          />
+          <ContextMenuItem
+            icon={<Trash2 className="h-3 w-3" />}
+            label="Drop table…"
+            destructive
+            onSelect={() => handleMenuAction('drop', menu.schema, menu.name)}
+          />
+        </div>
+      )}
+
+      {/* Describe / Alter — the table details drawer covers both. */}
+      {schema && (
+        <TableDetailsDrawer
+          schema={schema}
+          selection={detailsTarget}
+          onClose={() => setDetailsTarget(null)}
+          onOpenInSql={(s, n) => {
+            setDetailsTarget(null);
+            openTableInSql(router, profile, s, n, rowLimit);
+          }}
+          profile={profile}
+          onSchemaChange={() => {
+            // Force a fresh fetch — `load(profile)` short-circuits to
+            // the cached entry by default, so without `force` the
+            // drawer keeps showing the pre-ALTER column list.
+            void reloadSchema(profile, true).catch(() => {});
+          }}
+        />
+      )}
+
+      {/* Truncate / Drop confirmation. Renders the exact SQL so
+          the user can read what's about to execute — destructive
+          actions get a typing-confirm gate on the table name. */}
+      <Dialog
+        open={destructive != null}
+        onOpenChange={(o) => {
+          if (!o && !destructiveBusy) {
+            setDestructive(null);
+            setDestructiveError(null);
+          }
+        }}
+      >
+        <DialogContent>
+          {destructive && (
+            <DestructiveConfirm
+              kind={destructive.kind}
+              tableLabel={
+                destructive.schema && profile.engine !== 'sqlite'
+                  ? `${destructive.schema}.${destructive.name}`
+                  : destructive.name
+              }
+              sql={destructive.sql}
+              busy={destructiveBusy}
+              error={destructiveError}
+              onCancel={() => {
+                setDestructive(null);
+                setDestructiveError(null);
+              }}
+              onConfirm={runDestructive}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
+  );
+}
+
+function ContextMenuItem({
+  icon,
+  label,
+  onSelect,
+  destructive,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onSelect: () => void;
+  destructive?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={onSelect}
+      className={cn(
+        'flex w-full items-center gap-2 px-2 py-1 text-left text-[11px]',
+        'hover:bg-accent hover:text-accent-foreground',
+        destructive && 'text-destructive hover:bg-destructive/10 hover:text-destructive',
+      )}
+    >
+      <span className="shrink-0 opacity-80">{icon}</span>
+      <span>{label}</span>
+    </button>
+  );
+}
+
+function ContextMenuSeparator() {
+  return <div className="my-1 h-px bg-border" />;
+}
+
+/**
+ * Destructive confirmation panel for TRUNCATE / DROP. Renders the
+ * exact SQL we're about to send (so the user can verify the
+ * dialect-specific statement) and gates the Confirm button behind
+ * the user typing the table name — protects against the misclick
+ * case where the menu lands on the wrong row.
+ */
+function DestructiveConfirm({
+  kind,
+  tableLabel,
+  sql,
+  busy,
+  error,
+  onCancel,
+  onConfirm,
+}: {
+  kind: 'truncate' | 'drop';
+  tableLabel: string;
+  sql: string;
+  busy: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const [typed, setTyped] = useState('');
+  const verbLabel = kind === 'truncate' ? 'Truncate' : 'Drop';
+  const verbHint =
+    kind === 'truncate'
+      ? 'Empties every row. The table definition stays.'
+      : 'Removes the table and every row inside it. This cannot be undone.';
+  const matches = typed === tableLabel;
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle className="flex items-center gap-2 text-destructive">
+          <AlertTriangle className="h-4 w-4" />
+          {verbLabel} {tableLabel}?
+        </DialogTitle>
+        <DialogDescription>{verbHint}</DialogDescription>
+      </DialogHeader>
+      <div className="space-y-3">
+        <pre className="overflow-x-auto rounded border bg-muted/40 px-3 py-2 font-mono text-[11px]">
+          {sql}
+        </pre>
+        <div>
+          <label className="text-[11px] text-muted-foreground">
+            Type{' '}
+            <span className="font-mono text-foreground">{tableLabel}</span>{' '}
+            to confirm.
+          </label>
+          <input
+            type="text"
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            disabled={busy}
+            autoFocus
+            className="mt-1 h-8 w-full rounded border border-input bg-background px-2 text-[12px] focus:outline-none focus:ring-1 focus:ring-ring"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+          />
+        </div>
+        {error && (
+          <div className="rounded border border-destructive/40 bg-destructive/10 px-2 py-1 text-[11px] text-destructive">
+            {error}
+          </div>
+        )}
+      </div>
+      <DialogFooter>
+        <Button variant="outline" size="sm" onClick={onCancel} disabled={busy}>
+          Cancel
+        </Button>
+        <Button
+          variant="destructive"
+          size="sm"
+          onClick={onConfirm}
+          disabled={!matches || busy}
+        >
+          {busy ? `${verbLabel}ing…` : verbLabel}
+        </Button>
+      </DialogFooter>
+    </>
   );
 }
