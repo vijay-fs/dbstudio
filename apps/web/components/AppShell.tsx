@@ -283,7 +283,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           )}
         </nav>
 
-        <div className="border-t px-2 py-1.5">
+        <div className="space-y-0.5 border-t px-2 py-1.5">
           <Link
             href={'/diff' as Route}
             className={cn(
@@ -295,6 +295,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           >
             <GitCompare className="h-3.5 w-3.5 shrink-0" />
             <span>Schema diff</span>
+          </Link>
+          <Link
+            href={'/data-diff' as Route}
+            className={cn(
+              'flex items-center gap-2 rounded-md px-3 py-1.5 text-xs',
+              pathname === '/data-diff'
+                ? 'bg-background font-medium text-foreground shadow-sm'
+                : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+            )}
+          >
+            <Table2 className="h-3.5 w-3.5 shrink-0" />
+            <span>Data diff</span>
           </Link>
         </div>
 
