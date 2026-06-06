@@ -328,9 +328,17 @@ function buildInsertDraft(columns: SchemaColumn[]): InsertDraft[] {
 export function ResultTable({
   result,
   editable,
+  /** Engine of the connection that produced this result. Used purely
+   *  to drive identifier quoting in the right-click "Copy as INSERT"
+   *  export — MySQL needs backticks, everyone else takes ANSI
+   *  double-quotes. Read from `editable.profile.engine` when an
+   *  editable config is present; this prop covers the non-editable
+   *  query path so paste-into-MySQL still emits valid SQL. */
+  engine,
 }: {
   result: QueryResult;
   editable?: EditableConfig;
+  engine?: ConnectionProfile['engine'];
 }) {
   const gridApiRef = useRef<GridApi | null>(null);
   const theme = useTheme();
@@ -813,6 +821,10 @@ export function ResultTable({
       columns: result.columns,
       rows,
       baseName: editable ? `${editable.schema}.${editable.table}` : 'bearhold-result',
+      // Same reason as the right-click copy path: SQL exports need
+      // the right identifier quote style so a MySQL→MySQL or
+      // MySQL→file→MySQL round-trip pastes back in cleanly.
+      engine: editable?.profile.engine ?? engine,
     });
   };
 
@@ -1569,6 +1581,7 @@ export function ResultTable({
           cellColumn={contextMenu.cellColumn}
           columns={result.columns}
           tableName={editable ? editable.table : null}
+          engine={editable?.profile.engine ?? engine ?? null}
           onClose={() => setContextMenu(null)}
         />
       )}
@@ -1592,6 +1605,7 @@ function ResultContextMenu({
   cellColumn,
   columns,
   tableName,
+  engine,
   onClose,
 }: {
   x: number;
@@ -1604,6 +1618,10 @@ function ResultContextMenu({
    *  the INSERT statement targets it. Otherwise the user is prompted
    *  for a name. */
   tableName: string | null;
+  /** Drives identifier-quote style for the "Copy as INSERT" output.
+   *  null falls back to ANSI double-quotes — only safe for PG / SQLite
+   *  / Cockroach. MySQL/MariaDB pastes fail without backticks. */
+  engine: ConnectionProfile['engine'] | null;
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -1669,7 +1687,18 @@ function ResultContextMenu({
     // fall back to a placeholder the user edits after pasting. We
     // don't prompt here — the right-click menu should never block.
     const target = tableName ?? 'your_table';
-    const chunks = toSQLChunks({ columns, rows: rowArrays, tableName: target });
+    const chunks = toSQLChunks({
+      columns,
+      rows: rowArrays,
+      tableName: target,
+      // null `engine` falls back to ANSI quotes in the exporter.
+      // Right-clicking from a known connection (sidebar table browse
+      // or any editable result) always flows the engine through; the
+      // null path is only for ad-hoc query results without an
+      // anchored profile, which is rare and which the user is
+      // expected to hand-edit anyway.
+      engine: engine ?? undefined,
+    });
     copy(chunks.join(''));
   };
 

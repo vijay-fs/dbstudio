@@ -9,7 +9,8 @@
 // CSV export works without crashing the renderer. The Blob runtime
 // concatenates internally as it streams the bytes to the file.
 
-import type { ResultColumn } from './types';
+import type { DatabaseEngine, ResultColumn } from './types';
+import { quoteIdent, quoteStyleForEngine } from './sqlIdent';
 
 export type ExportFormat = 'csv' | 'json' | 'sql';
 
@@ -18,6 +19,10 @@ interface ExportInput {
   rows: unknown[][];
   /** Used as fallback filename stem and (for SQL) as the INSERT INTO target. */
   baseName: string;
+  /** Drives SQL identifier quoting. Omit only when the engine is
+   *  genuinely unknown (e.g. a cloud-exported result with no live
+   *  profile); the SQL export then defaults to ANSI double-quotes. */
+  engine?: DatabaseEngine;
 }
 
 /** RFC 4180 quoting: wrap in double quotes if the field contains comma,
@@ -81,26 +86,30 @@ function sqlLiteral(value: unknown): string {
   return `'${s.replace(/'/g, "''")}'`;
 }
 
-/** Identifier quoting — double-quote and double up internal quotes.
- *  Works for Postgres/SQLite; MySQL accepts double-quote idents when
- *  ANSI_QUOTES is enabled, which is the safe default these days. Users can
- *  hand-edit if they need backticks. */
-function sqlIdent(name: string): string {
-  return `"${name.replace(/"/g, '""')}"`;
-}
-
-/** Chunked SQL writer — one INSERT statement per chunk. */
+/** Chunked SQL writer — one INSERT statement per chunk. The `engine`
+ *  drives identifier quoting: backticks for MySQL/MariaDB, ANSI
+ *  double-quotes for Postgres/SQLite/Cockroach. The previous version
+ *  always emitted ANSI quotes which MySQL rejects unless `ANSI_QUOTES`
+ *  is enabled — so a paste from one MySQL into another would fail
+ *  with `you have an error in your SQL syntax near '"col_name"'`.
+ *
+ *  `engine` is optional so callers that genuinely don't know
+ *  (cloud-side downloads with no live profile) still get a usable
+ *  ANSI-quoted output. */
 export function toSQLChunks({
   columns,
   rows,
   tableName,
+  engine,
 }: {
   columns: ResultColumn[];
   rows: unknown[][];
   tableName: string;
+  engine?: DatabaseEngine;
 }): string[] {
-  const cols = columns.map((c) => sqlIdent(c.name)).join(', ');
-  const target = sqlIdent(tableName);
+  const style = engine ? quoteStyleForEngine(engine) : 'ansi';
+  const cols = columns.map((c) => quoteIdent(c.name, style)).join(', ');
+  const target = quoteIdent(tableName, style);
   const chunks: string[] = [];
   for (const r of rows) {
     chunks.push(`INSERT INTO ${target} (${cols}) VALUES (${r.map(sqlLiteral).join(', ')});\n`);
@@ -155,7 +164,7 @@ export function exportAs(format: ExportFormat, input: ExportInput): void {
       downloadChunks(
         `${base}-${stamp}.sql`,
         'application/sql',
-        toSQLChunks({ ...input, tableName }),
+        toSQLChunks({ ...input, tableName, engine: input.engine }),
       );
       return;
     }

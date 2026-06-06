@@ -624,7 +624,11 @@ function SqlPageInner() {
                     </div>
                   ))}
                 {state.kind === 'ok' && (
-                  <ResultTable result={state.result} editable={editable} />
+                  <ResultTable
+                    result={state.result}
+                    editable={editable}
+                    engine={profile.engine}
+                  />
                 )}
               </TabsContent>
               {canExplain && (
