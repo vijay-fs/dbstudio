@@ -11,6 +11,7 @@
 
 import type { DatabaseEngine, ResultColumn } from './types';
 import { quoteIdent, quoteStyleForEngine } from './sqlIdent';
+import { formatSqlLiteral } from './sqlLiteral';
 
 export type ExportFormat = 'csv' | 'json' | 'sql';
 
@@ -77,14 +78,10 @@ export function toJSONChunks({
   return chunks;
 }
 
-/** SQL string literal: wrap in single quotes, double up internal ones. */
-function sqlLiteral(value: unknown): string {
-  if (value === null || value === undefined) return 'NULL';
-  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'NULL';
-  if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
-  const s = typeof value === 'string' ? value : JSON.stringify(value);
-  return `'${s.replace(/'/g, "''")}'`;
-}
+// SQL literal formatting moved to `lib/sqlLiteral.ts` — shared with
+// the data-diff sync SQL emitter so the same engine-specific quirks
+// (MySQL datetime format, backslash escapes) get fixed once.
+const sqlLiteral = formatSqlLiteral;
 
 /** Chunked SQL writer — one INSERT statement per chunk. The `engine`
  *  drives identifier quoting: backticks for MySQL/MariaDB, ANSI
@@ -112,7 +109,11 @@ export function toSQLChunks({
   const target = quoteIdent(tableName, style);
   const chunks: string[] = [];
   for (const r of rows) {
-    chunks.push(`INSERT INTO ${target} (${cols}) VALUES (${r.map(sqlLiteral).join(', ')});\n`);
+    chunks.push(
+      `INSERT INTO ${target} (${cols}) VALUES (${r
+        .map((v) => sqlLiteral(v, engine))
+        .join(', ')});\n`,
+    );
   }
   return chunks;
 }

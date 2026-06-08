@@ -7,6 +7,7 @@
 // reviews + edits the SQL before running, same flow as schema diff.
 
 import { quoteIdent, quoteStyleForEngine } from './sqlIdent';
+import { formatSqlLiteral } from './sqlLiteral';
 import type { DatabaseEngine } from './types';
 import type { DataDiffResult } from './dataDiff';
 
@@ -21,18 +22,8 @@ function tableRef(
   return `${quoteIdent(schema, style)}.${t}`;
 }
 
-/** SQL-literal serialisation. Mirrors lib/openTable's sqlLiteral but
- *  is exported here so the data-diff UI can preview values inline. */
-function sqlLiteral(v: unknown): string {
-  if (v === null || v === undefined) return 'NULL';
-  if (typeof v === 'number') return Number.isFinite(v) ? String(v) : 'NULL';
-  if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';
-  if (v instanceof Date) return `'${v.toISOString()}'`;
-  if (typeof v === 'object') {
-    return `'${JSON.stringify(v).replace(/'/g, "''")}'`;
-  }
-  return `'${String(v).replace(/'/g, "''")}'`;
-}
+// Engine-aware literal formatter lives in lib/sqlLiteral.ts. Local
+// alias here so call sites stay readable.
 
 export interface SyncSqlOptions {
   /** Apply direction: should source become like target (default), or
@@ -82,7 +73,7 @@ export function buildSyncStatements(
   // authoritative shape and omitting columns risks silent defaulting.
   const colList = diff.columns.map((c) => quoteIdent(c, style)).join(', ');
   for (const row of rowsToInsert) {
-    const values = row.values.map(sqlLiteral).join(', ');
+    const values = row.values.map((v) => formatSqlLiteral(v, engine)).join(', ');
     inserts.push(`INSERT INTO ${ref} (${colList}) VALUES (${values});`);
   }
 
@@ -95,12 +86,12 @@ export function buildSyncStatements(
       .filter((c) => !pkSet.has(c.column))
       .map((c) => {
         const v = direction === 'source-to-target' ? c.target : c.source;
-        return `${quoteIdent(c.column, style)} = ${sqlLiteral(v)}`;
+        return `${quoteIdent(c.column, style)} = ${formatSqlLiteral(v, engine)}`;
       });
     if (setClauses.length === 0) continue;
     const whereClauses = diff.pkColumns.map((pk, idx) => {
       const v = m.pkValues[idx];
-      return `${quoteIdent(pk, style)} = ${sqlLiteral(v)}`;
+      return `${quoteIdent(pk, style)} = ${formatSqlLiteral(v, engine)}`;
     });
     updates.push(
       `UPDATE ${ref} SET ${setClauses.join(', ')} WHERE ${whereClauses.join(
@@ -116,7 +107,7 @@ export function buildSyncStatements(
     const whereClauses = diff.pkColumns.map((pk, idx) => {
       const pos = pkPositions[idx] ?? -1;
       const v = pos >= 0 ? row.values[pos] : null;
-      return `${quoteIdent(pk, style)} = ${sqlLiteral(v)}`;
+      return `${quoteIdent(pk, style)} = ${formatSqlLiteral(v, engine)}`;
     });
     deletes.push(`DELETE FROM ${ref} WHERE ${whereClauses.join(' AND ')};`);
   }
