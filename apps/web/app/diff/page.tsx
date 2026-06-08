@@ -14,6 +14,7 @@ import { AlertCircle, Loader2, GitCompare, Play, Check, Copy } from 'lucide-reac
 
 import { AppShell } from '@/components/AppShell';
 import { Button } from '@/components/ui/button';
+import { Combobox, type ComboboxOption } from '@/components/ui/combobox';
 import { useConnections } from '@/store/connections';
 import { useSchemaCache } from '@/store/schemaCache';
 import { api } from '@/lib/api';
@@ -169,23 +170,24 @@ function ConnectionPicker({
   onChange: (id: string) => void;
   profiles: ConnectionProfile[];
 }) {
+  const options: ComboboxOption[] = profiles.map((p) => ({
+    value: p.id,
+    label: p.name,
+    hint: ENGINE_LABELS[p.engine],
+    keywords: [p.engine, p.host, p.database].filter(Boolean) as string[],
+  }));
   return (
     <label className="block space-y-1">
       <span className="block text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
         {label}
       </span>
-      <select
+      <Combobox
         value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded border border-input bg-background px-2 py-1.5 text-sm"
-      >
-        <option value="">— pick a connection —</option>
-        {profiles.map((p) => (
-          <option key={p.id} value={p.id}>
-            {p.name} ({ENGINE_LABELS[p.engine]})
-          </option>
-        ))}
-      </select>
+        onChange={onChange}
+        options={options}
+        placeholder="— pick a connection —"
+        emptyLabel="No connections."
+      />
     </label>
   );
 }

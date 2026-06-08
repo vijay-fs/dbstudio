@@ -21,6 +21,7 @@ import {
 
 import { AppShell } from '@/components/AppShell';
 import { Button } from '@/components/ui/button';
+import { Combobox, type ComboboxOption } from '@/components/ui/combobox';
 import { useConnections } from '@/store/connections';
 import { useSchemaCache } from '@/store/schemaCache';
 import { api } from '@/lib/api';
@@ -368,41 +369,61 @@ function ConnectionPanel({
   onTableChange: (qualified: string) => void;
   engineFilter?: ConnectionProfile['engine'];
 }) {
-  const visible = engineFilter
-    ? profiles.filter((p) => p.engine === engineFilter)
-    : profiles;
+  const connectionOptions: ComboboxOption[] = useMemo(
+    () =>
+      profiles.map((p) => ({
+        value: p.id,
+        label: p.name,
+        hint: ENGINE_LABELS[p.engine],
+        keywords: [p.engine, p.host, p.database].filter(Boolean) as string[],
+        // Cross-engine targets stay visible but unpickable so the
+        // user can see *why* they can't pick them. The diff is
+        // same-engine only — see engineCanDiff.
+        disabled: engineFilter ? p.engine !== engineFilter : false,
+      })),
+    [profiles, engineFilter],
+  );
+
   const tables = schema ? flattenTables(schema) : [];
+  const tableOptions: ComboboxOption[] = useMemo(
+    () =>
+      tables.map((t) => ({
+        value: qualify(t),
+        label: qualify(t),
+        hint: t.primary_key ? undefined : 'no PK',
+        // No-PK tables are diff-incompatible (row alignment needs
+        // a key). Mark disabled so the user understands why some
+        // tables can't be picked.
+        disabled: !t.primary_key,
+        keywords: [t.schema, t.name],
+      })),
+    [tables],
+  );
+
   return (
     <div className="space-y-2 rounded border bg-card p-3">
       <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
         {label}
       </p>
-      <select
+      <Combobox
         value={profileId}
-        onChange={(e) => onProfileChange(e.target.value)}
-        className="h-8 w-full rounded border border-input bg-background px-2 text-xs"
-      >
-        <option value="">Choose connection…</option>
-        {visible.map((p) => (
-          <option key={p.id} value={p.id}>
-            {p.name} ({ENGINE_LABELS[p.engine]})
-          </option>
-        ))}
-      </select>
-      <select
+        onChange={onProfileChange}
+        options={connectionOptions}
+        placeholder="Choose connection…"
+        emptyLabel="No connections."
+      />
+      <Combobox
         value={tableValue}
-        onChange={(e) => onTableChange(e.target.value)}
+        onChange={onTableChange}
+        options={tableOptions}
+        placeholder={
+          tables.length === 0 ? 'Pick a connection first' : 'Choose table…'
+        }
+        emptyLabel={
+          tables.length === 0 ? 'Pick a connection first.' : 'No matches.'
+        }
         disabled={tables.length === 0}
-        className="h-8 w-full rounded border border-input bg-background px-2 text-xs disabled:opacity-50"
-      >
-        <option value="">{tables.length === 0 ? 'Pick a connection first' : 'Choose table…'}</option>
-        {tables.map((t) => (
-          <option key={qualify(t)} value={qualify(t)}>
-            {qualify(t)}
-            {t.primary_key ? '' : ' · no PK'}
-          </option>
-        ))}
-      </select>
+      />
     </div>
   );
 }

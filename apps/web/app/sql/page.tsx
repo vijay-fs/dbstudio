@@ -39,6 +39,7 @@ import { useSchemaCache } from '@/store/schemaCache';
 import { useSqlTabs } from '@/store/sqlTabs';
 import { useSnippets } from '@/store/snippets';
 import { useGridPrefs, ROW_LIMIT_OPTIONS } from '@/store/gridPrefs';
+import { buildSelectStarSql } from '@/lib/openTable';
 import { api } from '@/lib/api';
 import { ENGINE_LABELS, type QueryResult } from '@/lib/types';
 import type { Schema } from '@dbstudio/erd';
@@ -234,6 +235,9 @@ function SqlPageInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile?.id]);
 
+  // Limit-change watcher is wired further down once `onRun` is in
+  // scope; see the useEffect below the run helpers.
+
   // ---- derived state ----------------------------------------------------
 
   const activeTab = slot?.tabs.find((t) => t.id === slot.activeId) ?? slot?.tabs[0] ?? null;
@@ -370,6 +374,33 @@ function SqlPageInner() {
     }
   };
 
+  // Re-apply the row-limit selector to whatever table tab is in
+  // focus. The user's mental model is "limit is a knob on the table
+  // I'm viewing" — change it, visible result updates. Skip when the
+  // active tab isn't a table tab (free-form queries shouldn't be
+  // rewritten under the user) or when the generated SQL didn't
+  // actually change (e.g. limit was already that value).
+  const rowLimit = useGridPrefs((s) => s.rowLimit);
+  useEffect(() => {
+    if (!profile) return;
+    const cur = useSqlTabs.getState().byConnection[profile.id];
+    const active = cur?.tabs.find((t) => t.id === cur.activeId);
+    if (!active?.tableRef) return;
+    const nextSql = buildSelectStarSql(
+      profile.engine,
+      active.tableRef.schema,
+      active.tableRef.table,
+      rowLimit,
+    );
+    if (nextSql === active.sql) return;
+    setSql(profile.id, active.id, nextSql);
+    setTimeout(() => void onRun(nextSql), 0);
+    // Fires only when the row limit changes (or the connection
+    // switches), not on every render — initial table opens are
+    // handled by the click-table flow in openOrFocusTableTab.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rowLimit, profile?.id]);
+
   const [reconnecting, setReconnecting] = useState(false);
 
   /** Drop the cached pool + SSH tunnel for this connection, then reopen
@@ -382,6 +413,15 @@ function SqlPageInner() {
     setReconnecting(true);
     try {
       await api.reconnect(profile);
+      // Reconnect drops the pool but our local copy of the schema
+      // (autocomplete, sidebar table list, ER cache) was still the
+      // pre-reconnect snapshot — the user's mental model is "I
+      // reconnected so the latest schema should show up", and the
+      // schema page does this implicitly because it always refetches
+      // on mount. Mirror it here so autocomplete + the sidebar pick
+      // up table renames / new columns / ALTERs that happened on
+      // the other end while the previous pool was idle.
+      await useSchemaCache.getState().load(profile, true).catch(() => {});
     } catch {
       // disconnect errors are non-fatal — we still want to re-run.
     } finally {
